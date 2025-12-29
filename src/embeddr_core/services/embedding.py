@@ -6,7 +6,6 @@ from logging import Logger
 
 import numpy as np
 import torch
-from embeddr_core.core import get_device
 from PIL import Image
 from transformers import CLIPModel, CLIPProcessor, CLIPTokenizer
 
@@ -82,7 +81,8 @@ def load_model(model_name: str = MODEL_NAME):
                 device = get_device()
                 try:
                     model = CLIPModel.from_pretrained(model_name).to(device)
-                    processor = CLIPProcessor.from_pretrained(model_name, use_fast=True)
+                    processor = CLIPProcessor.from_pretrained(
+                        model_name, use_fast=True)
                     tokenizer = CLIPTokenizer.from_pretrained(model_name)
                     model.eval()
 
@@ -90,7 +90,8 @@ def load_model(model_name: str = MODEL_NAME):
                     _tokenizer = tokenizer
                     _model = model
 
-                    logger.info(f"CLIP model {model_name} loaded on device {device}.")
+                    logger.info(
+                        f"CLIP model {model_name} loaded on device {device}.")
                 except Exception as e:
                     logger.error(f"Failed to load model {model_name}: {e}")
                     raise e
@@ -112,7 +113,8 @@ def get_text_embedding(text: str, model_name: str = MODEL_NAME) -> np.ndarray:
 
     with torch.no_grad():
         text_features = model.get_text_features(**inputs)
-    text_features = text_features / text_features.norm(p=2, dim=-1, keepdim=True)
+    text_features = text_features / \
+        text_features.norm(p=2, dim=-1, keepdim=True)
     return text_features.cpu().numpy().flatten()
 
 
@@ -131,7 +133,8 @@ def get_image_embedding(image_bytes: bytes, model_name: str = MODEL_NAME) -> np.
 
     with torch.no_grad():
         image_features = model.get_image_features(**inputs)
-    image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
+    image_features = image_features / \
+        image_features.norm(p=2, dim=-1, keepdim=True)
 
     # image_embedding = image_features.cpu().numpy().flatten()
     # image_embedding /= np.linalg.norm(image_embedding) + 1e-10  # Normalize
@@ -172,7 +175,8 @@ def get_image_embeddings_batch(
     with torch.no_grad():
         image_features = model.get_image_features(**inputs)
 
-    image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
+    image_features = image_features / \
+        image_features.norm(p=2, dim=-1, keepdim=True)
 
     results = [None] * len(image_bytes_list)
     numpy_features = image_features.cpu().numpy()

@@ -1,6 +1,6 @@
 [project]
 name = "embeddr-core"
-version = "0.1.1"
+version = "0.1.3"
 description = "Embeddr Core Library"
 readme = "README.md"
 authors = [{ name = "Nynxz", email = "contact@nynxz.com" }]
