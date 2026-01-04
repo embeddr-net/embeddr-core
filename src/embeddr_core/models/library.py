@@ -26,7 +26,14 @@ class LocalImage(SQLModel, table=True):
     height: int | None = None
     file_size: int | None = None
     mime_type: str | None = None
+    media_type: str = Field(default="image", index=True)
+    duration: float | None = None
+    fps: float | None = None
+    frame_count: int | None = None
     prompt: str | None = None
+    tags: str | None = None
+    phash: str | None = Field(default=None, index=True)
+    is_archived: bool = Field(default=False, index=True)
 
     library: LibraryPath | None = Relationship(back_populates="images")
 
