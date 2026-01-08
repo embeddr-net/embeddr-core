@@ -1,26 +1,37 @@
 from datetime import datetime
-
+from uuid import UUID, uuid4
+from typing import Optional, List
 from sqlmodel import Field, Relationship, SQLModel
 
-from .library import LocalImage
+from .artifact import Artifact
 
 
 class Collection(SQLModel, table=True):
-    id: int | None = Field(default=None, primary_key=True)
+    """
+    A user-defined grouping of artifacts.
+    Replaces the old 'Collection' which was image-specific.
+    """
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
     name: str = Field(index=True)
-    description: str | None = None
+    description: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
-    items: list["CollectionItem"] = Relationship(
-        back_populates="collection", sa_relationship_kwargs={"cascade": "all, delete"}
+    # Relationships
+    items: List["CollectionItem"] = Relationship(
+        back_populates="collection",
+        sa_relationship_kwargs={"cascade": "all, delete"}
     )
 
 
 class CollectionItem(SQLModel, table=True):
-    id: int | None = Field(default=None, primary_key=True)
-    collection_id: int = Field(foreign_key="collection.id")
-    image_id: int = Field(foreign_key="localimage.id")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    """
+    Link table between Collection and Artifact.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    collection_id: UUID = Field(foreign_key="collection.id")
+    artifact_id: UUID = Field(foreign_key="artifact.id")
+    added_at: datetime = Field(default_factory=datetime.utcnow)
 
     collection: Collection = Relationship(back_populates="items")
-    image: LocalImage = Relationship()
+    # We don't necessarily need a back_populates on Artifact unless we want to access collections from artifact frequently
+    artifact: Artifact = Relationship()
