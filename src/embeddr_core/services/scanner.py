@@ -2,118 +2,93 @@ import logging
 import mimetypes
 import os
 from pathlib import Path
+from uuid import uuid4
+from typing import Optional, List
 
-import imagehash
-from PIL import Image
 from sqlmodel import Session, select
 
-from embeddr_core.models.library import LibraryPath, LocalImage
+from embeddr_core.models.artifact import Artifact
+from embeddr_core.models.tag import Tag, ArtifactTagLink
 
 logger = logging.getLogger(__name__)
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff"}
+# Basic extension mapping to artifact types
+# In a real plugin system, plugins would register these extensions
+EXTENSION_MAP = {
+    # Images
+    ".jpg": "image", ".jpeg": "image", ".png": "image", ".webp": "image",
+    ".gif": "image", ".bmp": "image", ".tiff": "image",
+    # Text
+    ".txt": "text", ".md": "text", ".json": "text",
+    # Audio
+    ".mp3": "audio", ".wav": "audio", ".flac": "audio"
+}
 
 
-def scan_library_path(session: Session, library_path: LibraryPath) -> int:
+def scan_path(session: Session, root_path: str, recursive: bool = True) -> int:
     """
-    Scans a library path for images and adds them to the database.
-    Returns the number of new images added.
+    Scans a filesystem path and creates Artifacts for found files.
+    Returns the number of new artifacts created.
     """
-    root_path = Path(library_path.path)
-    lib_name = library_path.name or library_path.path
-    logger.info(f"Starting scan of library: {lib_name} ({root_path})")
+    path_obj = Path(root_path).resolve()
+    logger.info(f"Starting scan of: {path_obj}")
 
-    if not root_path.exists():
-        logger.warning(f"Library path not found: {root_path}")
+    if not path_obj.exists():
+        logger.warning(f"Path not found: {path_obj}")
         return 0
 
     added_count = 0
-
-    # Get existing images for this library to avoid duplicates
-    # For large libraries, this might need optimization (e.g. set of paths)
-    existing_paths = set(
-        session.exec(
-            select(LocalImage.path).where(
-                LocalImage.library_path_id == library_path.id)
-        ).all()
-    )
-    logger.info(
-        f"Found {len(existing_paths)} existing images in database for {lib_name}")
-
     total_scanned = 0
-    for root, dirs, files in os.walk(root_path):
-        for file in files:
-            total_scanned += 1
-            if total_scanned % 100 == 0:
-                logger.info(
-                    f"Scanning {lib_name}: Checked {total_scanned} files, found {added_count} new images so far..."
+
+    # Walk the directory
+    for root, dirs, files in os.walk(path_obj):
+        for filename in files:
+            file_path = Path(root) / filename
+            ext = file_path.suffix.lower()
+
+            # Determine type (fallback to 'file')
+            art_type = EXTENSION_MAP.get(ext, "file")
+
+            # TODO: Check excludes/ignore patterns here
+
+            # Check if artifact already exists by URI
+            # Using str(file_path) as the URI for local files
+            uri = str(file_path)
+
+            # Simple existence check (could be optimized with a pre-fetched set for large dirs)
+            existing = session.exec(
+                select(Artifact).where(Artifact.uri == uri)
+            ).first()
+
+            if not existing:
+                # Create the artifact
+                artifact = Artifact(
+                    id=uuid4(),
+                    type_name=art_type,
+                    uri=uri,
+                    metadata_json={
+                        "filename": filename,
+                        "extension": ext,
+                        "size": file_path.stat().st_size,
+                        "scanner": "embeddr-core:filesystem"
+                    }
                 )
-
-            file_path = Path(root) / file
-            if file_path.suffix.lower() in IMAGE_EXTENSIONS:
-                str_path = str(file_path)
-
-                if str_path in existing_paths:
-                    logger.debug(f"Skipping existing image: {file}")
-                    continue
-
-                # Basic metadata
-                try:
-                    stat = file_path.stat()
-                    file_size = stat.st_size
-                except OSError:
-                    file_size = 0
-
-                mime_type, _ = mimetypes.guess_type(file_path)
-
-                width = None
-                height = None
-                phash = None
-
-                try:
-                    with Image.open(file_path) as img:
-                        width, height = img.size
-                        # Skipping phash for speed during initial scan.
-                        # This should be moved to a background task if needed.
-                        # phash = str(imagehash.phash(img))
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to process image metadata for {file_path}: {e}")
-
-                # Create image record
-                image = LocalImage(
-                    path=str_path,
-                    filename=file,
-                    library_path_id=library_path.id,
-                    file_size=file_size,
-                    mime_type=mime_type,
-                    width=width,
-                    height=height,
-                    phash=phash,
-                )
-                session.add(image)
+                session.add(artifact)
                 added_count += 1
-                logger.debug(f"Added new image: {file}")
 
-                # Commit in batches if needed, but for now simple
+                # Commit every 100 items to avoid massive transactions
+                if added_count % 100 == 0:
+                    session.commit()
+
+            total_scanned += 1
+            if total_scanned % 500 == 0:
+                logger.info(
+                    f"Scanned {total_scanned} files, added {added_count} artifacts...")
+
+        if not recursive:
+            break
 
     session.commit()
     logger.info(
-        f"Finished scanning {lib_name}. Total files checked: {total_scanned}. New images added: {added_count}."
-    )
+        f"Scan complete. Scanned {total_scanned}, Added {added_count}.")
     return added_count
-
-
-def scan_all_libraries(session: Session) -> dict:
-    """
-    Scans all configured library paths.
-    Returns a dict mapping library ID to count of added images.
-    """
-    libraries = session.exec(select(LibraryPath)).all()
-    results = {}
-
-    for lib in libraries:
-        count = scan_library_path(session, lib)
-        results[lib.id] = count
-
-    return results
