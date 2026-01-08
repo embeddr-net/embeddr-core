@@ -7,7 +7,8 @@ from sqlmodel import Session, select, col
 
 from embeddr_core.models.artifact import Artifact
 from embeddr_core.models.artifact_embedding import ArtifactEmbedding
-from embeddr_core.services.embedding import get_image_embeddings_batch
+from embeddr_core.models.artifact_annotation import ArtifactAnnotation
+from embeddr_core.services.embedding import get_image_embeddings_batch, get_text_embedding
 # Note: We need to inject the VectorStoreService instance or access a global ONE.
 # For now, let's assume we can import a getter or instantiation logic
 # from embeddr_core.services.vector_store import get_vector_service
@@ -29,7 +30,7 @@ def generate_embeddings_for_artifacts(
     # 1. Find candidates: Type 'image' or capability 'embeddable:vision' (TODO: capability check)
     # For now, simplistic check on type_name
     query = select(Artifact).where(
-        col(Artifact.type_name).in_(["image", "image:comfy"]))
+        col(Artifact.type_name).in_(["image", "image:comfy", "text", "document"]))
 
     # 2. Filter out those that already have embeddings for this model
     # (Unless force_recompute is True)
@@ -57,6 +58,39 @@ def generate_embeddings_for_artifacts(
     for artifact in artifacts_to_process:
         if stop_event and stop_event.is_set():
             break
+
+        # Handle text/docs separately
+        if artifact.type_name in ["text", "document"]:
+            # Try to find content annotation first
+            content_annotation = session.exec(select(ArtifactAnnotation).where(
+                ArtifactAnnotation.artifact_id == artifact.id,
+                ArtifactAnnotation.annotation_type == "content"
+            )).first()
+
+            text_content = ""
+            if content_annotation:
+                text_content = content_annotation.text
+            elif artifact.uri and os.path.exists(artifact.uri):
+                # Fallback to reading file if readable
+                try:
+                    with open(artifact.uri, "r", encoding="utf-8", errors="ignore") as f:
+                        text_content = f.read()
+                        # Limit text size for now
+                        text_content = text_content[:2000]
+                except:
+                    pass
+
+            if text_content:
+                try:
+                    emb = get_text_embedding(
+                        text_content, model_name=model_name)
+                    _save_embedding(session, artifact.id, emb,
+                                    model_name, space="textual")
+                    processed += 1
+                except Exception as e:
+                    logger.error(
+                        f"Failed to embed text artifact {artifact.id}: {e}")
+            continue
 
         # Resolve path - Assuming URI is file path for now
         # TODO: Handle non-file URIs via an AssetManager or similar
@@ -91,6 +125,24 @@ def generate_embeddings_for_artifacts(
         _process_batch(session, current_batch, current_batch_bytes, model_name)
 
     logger.info("Embedding generation complete.")
+
+
+def _save_embedding(session, artifact_id, vec, model_name, space="visual"):
+    """Helper to save a single embedding"""
+    try:
+        emb = ArtifactEmbedding(
+            artifact_id=artifact_id,
+            model_name=model_name,
+            vector_dim=len(vec),
+            vector_json=vec.tolist(),
+            space=space,
+            plugin_name="core:clip"
+        )
+        session.add(emb)
+        session.commit()
+    except Exception as e:
+        logger.error(f"Failed to save embedding for {artifact_id}: {e}")
+        session.rollback()
 
 
 def _process_batch(session, artifacts: List[Artifact], images_bytes: List[bytes], model_name: str):
