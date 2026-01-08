@@ -35,8 +35,7 @@ class Artifact(SQLModel, table=True):
     # Relationships
     artifact_type: ArtifactType = Relationship()
 
-    @property
-    def base_type_name(self) -> str:
+    def get_base_type_name(self) -> str:
         """
         Returns the name of the immediate parent type, or 'artifact' if none.
         Useful for fallbacks (e.g. if 'image:comfy' is missing, treat as 'image').
