@@ -5,10 +5,14 @@ from embeddr_core.models.lineage import ImageLineage
 
 
 class LibraryPath(SQLModel, table=True):
-    id: int | None = Field(default=None, primary_key=True)
-    path: str = Field(index=True, unique=True)
-    name: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    id: int | None = Field(default=None, primary_key=True,
+                           description="Unique identifier for the library path.")
+    path: str = Field(index=True, unique=True,
+                      description="The absolute filesystem path.")
+    name: str | None = Field(
+        default=None, description="Optional display name.")
+    created_at: datetime = Field(
+        default_factory=datetime.utcnow, description="Timestamp when the library was added.")
 
     images: list["LocalImage"] = Relationship(back_populates="library")
 

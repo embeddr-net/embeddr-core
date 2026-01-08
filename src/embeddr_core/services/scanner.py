@@ -73,7 +73,9 @@ def scan_library_path(session: Session, library_path: LibraryPath) -> int:
                 try:
                     with Image.open(file_path) as img:
                         width, height = img.size
-                        phash = str(imagehash.phash(img))
+                        # Skipping phash for speed during initial scan.
+                        # This should be moved to a background task if needed.
+                        # phash = str(imagehash.phash(img))
                 except Exception as e:
                     logger.warning(
                         f"Failed to process image metadata for {file_path}: {e}")
