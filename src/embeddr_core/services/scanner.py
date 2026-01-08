@@ -8,6 +8,7 @@ from typing import Optional, List
 from sqlmodel import Session, select
 
 from embeddr_core.models.artifact import Artifact
+from embeddr_core.models.artifact_lineage import ArtifactLineage
 from embeddr_core.models.tag import Tag, ArtifactTagLink
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,8 @@ EXTENSION_MAP = {
     ".gif": "image", ".bmp": "image", ".tiff": "image",
     # Text
     ".txt": "text", ".md": "text", ".json": "text",
+    # PDFs
+    ".pdf": "document",
     # Audio
     ".mp3": "audio", ".wav": "audio", ".flac": "audio"
 }
@@ -42,6 +45,27 @@ def scan_path(session: Session, root_path: str, recursive: bool = True) -> int:
 
     # Walk the directory
     for root, dirs, files in os.walk(path_obj):
+        root_path = Path(root)
+
+        # 1. Handle Directory Artifact
+        dir_uri = str(root_path)
+        dir_art = session.exec(select(Artifact).where(
+            Artifact.uri == dir_uri)).first()
+
+        if not dir_art:
+            dir_art = Artifact(
+                id=uuid4(),
+                type_name="folder",
+                uri=dir_uri,
+                metadata_json={
+                    "filename": root_path.name,
+                    "scanner": "embeddr-core:filesystem"
+                }
+            )
+            session.add(dir_art)
+            session.flush()  # Ensure ID is available
+            added_count += 1
+
         for filename in files:
             file_path = Path(root) / filename
             ext = file_path.suffix.lower()
@@ -55,14 +79,15 @@ def scan_path(session: Session, root_path: str, recursive: bool = True) -> int:
             # Using str(file_path) as the URI for local files
             uri = str(file_path)
 
-            # Simple existence check (could be optimized with a pre-fetched set for large dirs)
+            # Simple existence check
             existing = session.exec(
                 select(Artifact).where(Artifact.uri == uri)
             ).first()
 
+            target_artifact = existing
             if not existing:
                 # Create the artifact
-                artifact = Artifact(
+                target_artifact = Artifact(
                     id=uuid4(),
                     type_name=art_type,
                     uri=uri,
@@ -73,12 +98,26 @@ def scan_path(session: Session, root_path: str, recursive: bool = True) -> int:
                         "scanner": "embeddr-core:filesystem"
                     }
                 )
-                session.add(artifact)
+                session.add(target_artifact)
+                session.flush()  # Ensure ID
                 added_count += 1
 
-                # Commit every 100 items to avoid massive transactions
-                if added_count % 100 == 0:
-                    session.commit()
+            # Ensure Lineage: Directory -> File
+            # Check if relation exists
+            # We can use a composite PK check normally, but let's query
+            rel_exists = session.get(
+                ArtifactLineage, (dir_art.id, target_artifact.id))
+            if not rel_exists:
+                lineage = ArtifactLineage(
+                    parent_id=dir_art.id,
+                    child_id=target_artifact.id,
+                    relationship_metadata={"type": "containment"}
+                )
+                session.add(lineage)
+
+            # Commit periodically
+            if added_count % 100 == 0:
+                session.commit()
 
             total_scanned += 1
             if total_scanned % 500 == 0:
