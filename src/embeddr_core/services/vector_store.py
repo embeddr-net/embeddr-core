@@ -1,102 +1,148 @@
 import json
-import os
-from pathlib import Path
+import logging
+from typing import List, Optional, Dict, Any
+from uuid import UUID
 
 import numpy as np
+from sqlmodel import Session, select
+
+from embeddr_core.models.artifact_embedding import ArtifactEmbedding
+
+logger = logging.getLogger(__name__)
 
 
-def get_vector_store_path():
-    return Path(os.environ.get("EMBEDDR_VECTOR_STORAGE_DIR", "vector_storage"))
+class VectorStoreService:
+    """
+    Manages vector embeddings using the ArtifactEmbedding table for definition
+    and in-memory numpy/faiss indexes for search.
+    """
 
+    def __init__(self, session_factory):
+        self.session_factory = session_factory
+        # Cache of loaded vectors: { model_name: { space: (ids, vectors) } }
+        self._cache = {}
 
-SHARD_SIZE = 1000  # Number of embeddings per shard
+    def get_connector(self, model_name: str, space: str = "default"):
+        """
+        Returns a helper object for a specific model/space.
+        """
+        return VectorSpaceConnector(self, model_name, space)
 
+    def add_embedding(self, session: Session, artifact_id: UUID, vector: List[float],
+                      model_name: str, vector_dim: int, space: str = "default",
+                      plugin_name: str = "unknown"):
+        """
+        Persists an embedding to the database.
+        """
+        # Check if exists
+        existing = session.exec(
+            select(ArtifactEmbedding).where(
+                ArtifactEmbedding.artifact_id == artifact_id,
+                ArtifactEmbedding.model_name == model_name,
+                ArtifactEmbedding.space == space
+            )
+        ).first()
 
-class VectorStore:
-    def __init__(self, storage_path: Path = None, model_name: str = "default"):
-        if storage_path is None:
-            storage_path = get_vector_store_path()
-        self.storage_path = storage_path / model_name
-        self.storage_path.mkdir(parents=True, exist_ok=True)
-        self.embeddings = None
-        self.ids = []
-        self.metadata = []
-        self.id_to_index = {}
-        self.dirty = False
-        self.load_shards()
-
-    def load_shards(self):
-        # Load all shards into memory for now (simple search)
-        self.embeddings = None
-        self.ids = []
-        self.metadata = []
-
-        shard_files = sorted(list(self.storage_path.glob("shard_*.npy")))
-        for shard_file in shard_files:
-            shard_id = shard_file.stem.split("_")[1]
-            meta_file = self.storage_path / f"meta_{shard_id}.json"
-
-            if meta_file.exists():
-                shard_emb = np.load(shard_file)
-                with open(meta_file) as f:
-                    shard_meta = json.load(f)
-
-                if self.embeddings is None:
-                    self.embeddings = shard_emb
-                else:
-                    self.embeddings = np.concatenate(
-                        (self.embeddings, shard_emb), axis=0
-                    )
-
-                self.ids.extend([m["id"] for m in shard_meta])
-                self.metadata.extend(shard_meta)
-
-        # Create ID lookup map
-        self.id_to_index = {id: i for i, id in enumerate(self.ids)}
-
-        count = len(self.ids)
-        print(f"Loaded {count} embeddings from {len(shard_files)} shards.")
-
-    def add(
-        self, id: int, vector: np.ndarray, meta: dict = None, auto_save: bool = True
-    ):
-        # Add to memory
-        if self.embeddings is None:
-            self.embeddings = np.array([vector])
+        if existing:
+            # Update (optional, maybe we want to guard against overwrite?)
+            existing.vector_json = vector
+            existing.plugin_name = plugin_name
+            existing.created_at = existing.created_at  # Keep original creation or update?
+            session.add(existing)
         else:
-            self.embeddings = np.vstack([self.embeddings, vector])
+            emb = ArtifactEmbedding(
+                artifact_id=artifact_id,
+                model_name=model_name,
+                vector_dim=vector_dim,
+                vector_json=vector,
+                space=space,
+                plugin_name=plugin_name
+            )
+            session.add(emb)
 
-        self.ids.append(id)
-        self.metadata.append({"id": id, **(meta or {})})
-        self.id_to_index[id] = len(self.ids) - 1
-        self.dirty = True
+        # Invalidate cache for this space
+        self._invalidate_cache(model_name, space)
 
-        if auto_save:
-            self.save()
-
-    def add_batch(
-        self, ids: list[int], vectors: list[np.ndarray], metas: list[dict] = None
-    ):
+    def search(self, query_vector: List[float], model_name: str,
+               limit: int = 50, space: str = "default") -> List[Dict[str, Any]]:
+        """
+        Performs a similarity search using in-memory index.
+        Loads index from DB if not cached.
+        """
+        ids, vectors = self._load_index(model_name, space)
         if not ids:
-            return
+            return []
 
-        if metas is None:
-            metas = [{}] * len(ids)
+        query_np = np.array([query_vector]).astype('float32')
+        # Normalize query if using cosine similarity (assumes vectors are normalized)
 
-        # Convert vectors to numpy array if list
-        vectors_arr = np.array(vectors)
+        # Simple dot product search (numpy) - good for small datasets (<100k)
+        # For larger, would use FAISS here.
+        scores = np.dot(vectors, query_np.T).flatten()
 
-        if self.embeddings is None:
-            self.embeddings = vectors_arr
-        else:
-            self.embeddings = np.vstack([self.embeddings, vectors_arr])
+        # Get top-k
+        # argsort sorts ascending, so take last k and reverse
+        top_k_indices = np.argsort(scores)[-limit:][::-1]
 
-        start_idx = len(self.ids)
-        self.ids.extend(ids)
+        results = []
+        for idx in top_k_indices:
+            results.append({
+                "artifact_id": ids[idx],
+                "score": float(scores[idx])
+            })
 
-        for i, (id, meta) in enumerate(zip(ids, metas)):
-            self.metadata.append({"id": id, **(meta or {})})
-            self.id_to_index[id] = start_idx + i
+        return results
+
+    def _load_index(self, model_name: str, space: str):
+        key = f"{model_name}:{space}"
+        if key in self._cache:
+            return self._cache[key]
+
+        logger.info(
+            f"Loading vector index for {model_name}/{space} from DB...")
+
+        with self.session_factory() as session:
+            # Fetch all embeddings for this model/space
+            # Warning: accurate but memory heavy for millions of rows.
+            # Production would use PGVector or dedicated vector DB.
+            statement = select(ArtifactEmbedding.artifact_id, ArtifactEmbedding.vector_json)\
+                .where(ArtifactEmbedding.model_name == model_name)\
+                .where(ArtifactEmbedding.space == space)
+
+            results = session.exec(statement).all()
+
+            if not results:
+                self._cache[key] = ([], np.array([]))
+                return [], np.array([])
+
+            ids = [r[0] for r in results]
+            # Convert list of floats to numpy array
+            vectors = np.array([r[1] for r in results]).astype('float32')
+
+            self._cache[key] = (ids, vectors)
+            logger.info(f"Loaded {len(ids)} vectors.")
+            return ids, vectors
+
+    def _invalidate_cache(self, model_name: str, space: str):
+        key = f"{model_name}:{space}"
+        if key in self._cache:
+            del self._cache[key]
+
+
+class VectorSpaceConnector:
+    """Helper for a specific model/space context"""
+
+    def __init__(self, service: VectorStoreService, model_name: str, space: str):
+        self.service = service
+        self.model_name = model_name
+        self.space = space
+
+    def add(self, session: Session, artifact_id: UUID, vector: List[float], dim: int):
+        self.service.add_embedding(
+            session, artifact_id, vector, self.model_name, dim, self.space)
+
+    def search(self, query_vector: List[float], limit: int = 50):
+        return self.service.search(query_vector, self.model_name, limit, self.space)
 
         self.dirty = True
         self.save()
@@ -108,7 +154,8 @@ class VectorStore:
         ids_set = set(ids_to_delete)
 
         # Identify indices to keep
-        indices_to_keep = [i for i, id in enumerate(self.ids) if id not in ids_set]
+        indices_to_keep = [i for i, id in enumerate(
+            self.ids) if id not in ids_set]
 
         if len(indices_to_keep) == len(self.ids):
             return  # Nothing to delete
