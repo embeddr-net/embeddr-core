@@ -1,147 +1,119 @@
 import logging
 import os
+from typing import List
+from uuid import UUID
 
-from sqlmodel import Session, select
+from sqlmodel import Session, select, col
 
-from embeddr_core.models.library import LocalImage
-from embeddr_core.services.embedding import (
-    get_image_embeddings_batch,
-)
-from embeddr_core.services.vector_store import get_vector_store
+from embeddr_core.models.artifact import Artifact
+from embeddr_core.models.artifact_embedding import ArtifactEmbedding
+from embeddr_core.services.embedding import get_image_embeddings_batch
+# Note: We need to inject the VectorStoreService instance or access a global ONE.
+# For now, let's assume we can import a getter or instantiation logic
+# from embeddr_core.services.vector_store import get_vector_service
 
 logger = logging.getLogger(__name__)
 
 
-def generate_embeddings_for_library(
+def generate_embeddings_for_artifacts(
     session: Session,
-    library_id: int,
     model_name: str = "openai/clip-vit-base-patch32",
     batch_size: int = 10,
     stop_event=None,
     progress_callback=None,
-) -> int:
+    force_recompute: bool = False
+):
     """
-    Generates embeddings for all images in a library that don't have them yet.
+    Generates embeddings for all artifacts that support it and don't have them.
     """
-    images = session.exec(
-        select(LocalImage).where(LocalImage.library_path_id == library_id)
-    ).all()
+    # 1. Find candidates: Type 'image' or capability 'embeddable:vision' (TODO: capability check)
+    # For now, simplistic check on type_name
+    query = select(Artifact).where(
+        col(Artifact.type_name).in_(["image", "image:comfy"]))
 
-    store = get_vector_store(model_name)
-    count = 0
+    # 2. Filter out those that already have embeddings for this model
+    # (Unless force_recompute is True)
+    if not force_recompute:
+        # Subquery to find IDs with existing embeddings
+        existing_sub = select(ArtifactEmbedding.artifact_id)\
+            .where(ArtifactEmbedding.model_name == model_name)
 
-    # Collect images that need embeddings
-    images_to_process = []
-    for image in images:
-        if store.get_vector_by_id(image.id) is None:
-            images_to_process.append(image)
+        query = query.where(col(Artifact.id).not_in(existing_sub))
 
-    total_images = len(images_to_process)
+    artifacts_to_process = session.exec(query).all()
+    total_count = len(artifacts_to_process)
+
     logger.info(
-        f"Found {total_images} images needing embeddings for library {library_id} using model {model_name}"
-    )
+        f"Found {total_count} artifacts needing embeddings for {model_name}")
 
     if progress_callback:
-        progress_callback(
-            0,
-            total_images,
-            f"Starting embedding generation for {total_images} images...",
-        )
+        progress_callback(0, total_count, "Starting generation...")
 
     # Process in batches
-    BATCH_SIZE = batch_size
+    current_batch = []
+    current_batch_bytes = []
+    processed = 0
 
-    batch_images = []
-    batch_image_bytes = []
-
-    for i, image in enumerate(images_to_process):
-        # Check for stop signal
+    for artifact in artifacts_to_process:
         if stop_event and stop_event.is_set():
-            logger.info("Embedding generation stopped by user.")
             break
 
+        # Resolve path - Assuming URI is file path for now
+        # TODO: Handle non-file URIs via an AssetManager or similar
+        fpath = artifact.uri
+        if not fpath or not os.path.exists(fpath):
+            continue
+
         try:
-            if not os.path.exists(image.path):
-                continue
+            with open(fpath, "rb") as f:
+                content = f.read()
 
-            with open(image.path, "rb") as f:
-                ib = f.read()
-
-            batch_images.append(image)
-            batch_image_bytes.append(ib)
-
-            if len(batch_images) >= BATCH_SIZE:
-                # Process batch
-                vectors = get_image_embeddings_batch(batch_image_bytes, model_name)
-
-                valid_ids = []
-                valid_vectors = []
-                valid_metas = []
-
-                for idx, vec in enumerate(vectors):
-                    if vec is not None:
-                        img = batch_images[idx]
-                        valid_ids.append(img.id)
-                        valid_vectors.append(vec)
-                        valid_metas.append(
-                            {
-                                "path": img.path,
-                                "filename": img.filename,
-                                "library_id": library_id,
-                            }
-                        )
-                    else:
-                        logger.warning(
-                            f"Failed to generate embedding for {batch_images[idx].path}"
-                        )
-
-                if valid_ids:
-                    store.add_batch(valid_ids, valid_vectors, valid_metas)
-                    count += len(valid_ids)
-
-                logger.info(f"Processed {count}/{total_images} embeddings")
-
-                if progress_callback:
-                    progress_callback(
-                        count, total_images, f"Processed {count}/{total_images} images"
-                    )
-
-                # Reset batch
-                batch_images = []
-                batch_image_bytes = []
-
+            current_batch.append(artifact)
+            current_batch_bytes.append(content)
         except Exception as e:
-            logger.error(f"Failed to prepare embedding batch for {image.path}: {e}")
+            logger.error(f"Error reading {fpath}: {e}")
+            continue
 
-    # Process remaining
-    if batch_images:
-        try:
-            vectors = get_image_embeddings_batch(batch_image_bytes, model_name)
-
-            valid_ids = []
-            valid_vectors = []
-            valid_metas = []
-
-            for idx, vec in enumerate(vectors):
-                if vec is not None:
-                    img = batch_images[idx]
-                    valid_ids.append(img.id)
-                    valid_vectors.append(vec)
-                    valid_metas.append(
-                        {
-                            "path": img.path,
-                            "filename": img.filename,
-                            "library_id": library_id,
-                        }
-                    )
-
-            if valid_ids:
-                store.add_batch(valid_ids, valid_vectors, valid_metas)
-                count += len(valid_ids)
-
+        if len(current_batch) >= batch_size:
+            _process_batch(session, current_batch,
+                           current_batch_bytes, model_name)
+            processed += len(current_batch)
             if progress_callback:
-                progress_callback(count, total_images, "Finalizing...")
-        except Exception as e:
-            logger.error(f"Failed to process final batch: {e}")
+                progress_callback(processed, total_count,
+                                  f"Processed {processed}/{total_count}")
 
-    return count
+            # Reset
+            current_batch = []
+            current_batch_bytes = []
+
+    # Final batch
+    if current_batch:
+        _process_batch(session, current_batch, current_batch_bytes, model_name)
+
+    logger.info("Embedding generation complete.")
+
+
+def _process_batch(session, artifacts: List[Artifact], images_bytes: List[bytes], model_name: str):
+    try:
+        vectors = get_image_embeddings_batch(images_bytes, model_name)
+
+        for i, vec in enumerate(vectors):
+            if vec is not None:
+                art = artifacts[i]
+
+                # Check existance manually if we didn't filter earlier, but we did.
+                # Just insert.
+                emb = ArtifactEmbedding(
+                    artifact_id=art.id,
+                    model_name=model_name,
+                    vector_dim=len(vec),
+                    vector_json=vec.tolist(),  # explicit convert to list for JSON field
+                    space="visual",  # Hardcoded for now, CLIP is visual
+                    plugin_name="core:clip"
+                )
+                session.add(emb)
+
+        session.commit()
+    except Exception as e:
+        logger.error(f"Batch processing failed: {e}")
+        session.rollback()
