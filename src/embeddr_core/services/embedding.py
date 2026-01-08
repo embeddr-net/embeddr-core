@@ -105,7 +105,10 @@ def get_text_embedding(text: str, model_name: str = MODEL_NAME) -> np.ndarray:
     # Ensure Tokenizer
     if tokenizer is None:
         raise ValueError("Tokenizer not loaded")
-    inputs = tokenizer([text], padding=True, return_tensors="pt")
+
+    # Truncate to max length for CLIP (77 tokens including special tokens)
+    inputs = tokenizer([text], padding=True, truncation=True,
+                       max_length=77, return_tensors="pt")
 
     # Move inputs to the same device as the model
     device = model.device
