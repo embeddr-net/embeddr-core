@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
+from .models.analysis_capability import AnalysisCapability
 
 # Since we don't want to depend on FastAPI/Typer directly in Core if possible,
 # we use Any for the app/cli objects, or strict types if we add deps.
@@ -13,7 +14,21 @@ class PluginIntent(str, Enum):
     REGISTER_CLI = "register_cli"
     REGISTER_CAPABILITY = "register_capability"
     REGISTER_ARTIFACT_TYPE = "register_artifact_type"
+    ZEN_PANEL = "zen_panel"
     EVENT_LISTENER = "event_listener"
+    DATABASE_ACCESS = "database_access"  # Grants raw DB session access
+    EXECUTION_HANDLER = "execution_handler"  # Can handle ArtifactExecutions
+    DRAG_DROP_TARGET = "drag_drop_target"  # Accepts drag-and-drop of artifacts
+    # Registers as a core embedding provider
+    PROVIDE_EMBEDDINGS = "provide_embeddings"
+    # Declares models and resource usage
+    PROVIDE_MODEL_INSIGHTS = "provide_model_insights"
+    # Registers MCP tools
+    REGISTER_MCP_TOOL = "register_mcp_tool"
+    # Registers MCP resources
+    REGISTER_MCP_RESOURCE = "register_mcp_resource"
+    # Declares ability to perform automated analysis/actions on artifacts
+    AUTO_ANALYSIS = "auto_analysis"
 
 
 class PluginAction(BaseModel):
@@ -21,12 +36,41 @@ class PluginAction(BaseModel):
     Defines an executable action (usually a CLI command) that the plugin exposes.
     This allows UIs to introspect and run plugin functionality.
     """
-    name: str  # Machine readable ID
-    label: str  # Human readable label
+    name: str  # Machine readable ID (required)
+    label: str  # Human readable label (required)
     description: str = ""
-    command_args: str  # The args to pass to 'embeddr' CLI. e.g. "fixtures load"
+
+    # CLI Command (legacy/simple)
+    # The args to pass to 'embeddr' CLI. e.g. "fixtures load"
+    command_args: Optional[str] = None
+
     requires_confirmation: bool = True
     danger: bool = False  # If true, show red button
+
+    # Execution Framework
+    tier: str = "user"  # user, system
+    inputs: List[str] = []  # Capabilities/Types e.g. ["artifact:image"]
+    outputs: List[str] = []
+    idempotent: bool = False
+
+    # UI Components Registration (Optional if action is CLI-only)
+    # The name of the exported component class in the JS bundle
+    ui_component: Optional[str] = None
+    # e.g. "zen-overlay", "sidebar", "editor"
+    ui_location: Optional[str] = None
+
+
+class FrontendComponent(BaseModel):
+    """
+    Defines a standalone UI component provided by the plugin.
+    Unlike actions, these are mounted automatically by the frontend.
+    """
+    name: str  # Unique ID within plugin
+    component: str  # Name of exported component in bundle
+    location: str  # "zen-toolbox-tab", "sidebar", "header", etc.
+    label: Optional[str] = None
+    icon: Optional[str] = None  # Lucide icon name string
+    props: Dict[str, Any] = {}
 
 
 class EmbeddrEvent(BaseModel):
@@ -58,10 +102,15 @@ class PluginContext(BaseModel):
     Contains references to system services.
     """
     bus: Optional[Any] = None  # Using Any to avoid circular imports, typically EventBus
+    # Use Dict[str, Any] for maximum compatibility
+    capability_registry: Optional[Dict[str, Any]] = None
+    resources: Optional[Any] = None  # Typically ResourceManager
     # We can add db_engine, config, etc here later if needed
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = {
+        "arbitrary_types_allowed": True,
+        "extra": "allow"  # Allow extra fields to avoid AttributeError during migrations
+    }
 
 
 class EmbeddrPlugin(ABC):
@@ -94,6 +143,63 @@ class EmbeddrPlugin(ABC):
         """
         return []
 
+    @property
+    def analysis_capabilities(self) -> List[AnalysisCapability]:
+        """
+        List of auto-analysis capabilities this plugin provides.
+        Only used if intent includes AUTO_ANALYSIS.
+        """
+        return []
+
+    @property
+    def frontend_components(self) -> List[FrontendComponent]:
+        """
+        List of frontend components this plugin provides.
+        """
+        return []
+
+    def get_config_schema(self) -> Dict[str, Any]:
+        """
+        Return a JSON schema or a list of config items the plugin uses.
+        """
+        return {}
+
+    def get_config(self) -> Dict[str, Any]:
+        """
+        Return the current configuration values.
+        """
+        return {}
+
+    def update_config(self, config: Dict[str, Any]) -> None:
+        """
+        Update the plugin's configuration.
+        """
+        pass
+
+    # --- Lifecycle Hooks ---
+
+    def on_load(self, context: Optional[PluginContext] = None) -> None:
+        """Called when plugin is loaded. context provides access to system services."""
+        pass
+
+    def on_startup(self, context: Optional[PluginContext] = None) -> None:
+        """
+        Called when the application is fully started (after DB and servers are up).
+        Use this to register dynamic capabilities, start background threads, etc.
+        """
+        pass
+
+    def on_shutdown(self, context: Optional[PluginContext] = None) -> None:
+        """
+        Called when the application is shutting down.
+        Use this for cleanup, closing connections, etc.
+        """
+        pass
+
+    def on_unload(self) -> None:
+        """Called when plugin is unloaded"""
+        pass
+
     # --- CLI / API Hooks ---
 
     def register_api(self, router: Any) -> None:
@@ -109,6 +215,27 @@ class EmbeddrPlugin(ABC):
         'cli_group' is a Typer instance scoped to the plugin name.
         """
         pass
+
+    # --- MCP Hooks ---
+
+    def register_mcp_tools(self) -> List[Dict[str, Any]]:
+        """
+        Return list of MCP tool definitions.
+        Format should match MCP Tool schema.
+        {
+            "name": "tool_name",
+            "description": "...",
+            "inputSchema": {...},
+            "handler": callable_function
+        }
+        """
+        return []
+
+    def register_mcp_resources(self) -> List[Dict[str, Any]]:
+        """
+        Return list of MCP resource definitions.
+        """
+        return []
 
     # --- Core Schema Hooks ---
 
@@ -126,18 +253,23 @@ class EmbeddrPlugin(ABC):
         """
         return []
 
+    def execute(self, action_name: str, execution_id: Any, inputs: Dict[str, Any], context: Optional[PluginContext] = None) -> Dict[str, Any]:
+        """
+        Execute an action defined by this plugin.
+        Should raise exception on failure.
+        Return value is stored as 'outputs'.
+        """
+        raise NotImplementedError(
+            f"Plugin {self.name} does not support execution of {action_name}")
+
     def register_capabilities(self) -> List[str]:
         """
         Return a list of capability keys this plugin introduces.
         """
         return []
 
-    # --- Lifecycle ---
+    # --- Deprecated Hooks (kept for backward compat if any) ---
 
-    def on_load(self, context: Optional[PluginContext] = None) -> None:
-        """Called when plugin is loaded. context provides access to system services."""
-        pass
-
-    def on_unload(self) -> None:
-        """Called when plugin is unloaded"""
-        pass
+    def load(self, context=None):
+        """Deprecated: Use on_load instead."""
+        self.on_load(context)

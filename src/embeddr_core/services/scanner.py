@@ -8,8 +8,9 @@ from typing import Optional, List
 from sqlmodel import Session, select
 
 from embeddr_core.models.artifact import Artifact
-from embeddr_core.models.artifact_lineage import ArtifactLineage
+from embeddr_core.models.artifact_relation import ArtifactRelation
 from embeddr_core.models.tag import Tag, ArtifactTagLink
+from embeddr_core.services.scanner_registry import scanner_registry, Scanner
 
 logger = logging.getLogger(__name__)
 
@@ -102,18 +103,18 @@ def scan_path(session: Session, root_path: str, recursive: bool = True) -> int:
                 session.flush()  # Ensure ID
                 added_count += 1
 
-            # Ensure Lineage: Directory -> File
+            # Ensure Relation: Directory (Contains) -> File
             # Check if relation exists
-            # We can use a composite PK check normally, but let's query
             rel_exists = session.get(
-                ArtifactLineage, (dir_art.id, target_artifact.id))
+                ArtifactRelation, (dir_art.id, target_artifact.id))
             if not rel_exists:
-                lineage = ArtifactLineage(
-                    parent_id=dir_art.id,
-                    child_id=target_artifact.id,
-                    relationship_metadata={"type": "containment"}
+                relation = ArtifactRelation(
+                    source_id=dir_art.id,
+                    target_id=target_artifact.id,
+                    relation_type="contains",
+                    source_namespace="embeddr-core:scanner"
                 )
-                session.add(lineage)
+                session.add(relation)
 
             # Commit periodically
             if added_count % 100 == 0:
@@ -131,3 +132,30 @@ def scan_path(session: Session, root_path: str, recursive: bool = True) -> int:
     logger.info(
         f"Scan complete. Scanned {total_scanned}, Added {added_count}.")
     return added_count
+
+
+class LocalFileSystemScanner(Scanner):
+    def scan(self, session: Session, artifact: Artifact, recursive: bool = True) -> int:
+        if not artifact.uri:
+            logger.warning(
+                f"Artifact {artifact.id} has no URI, cannot scan filesystem.")
+            return 0
+        return scan_path(session, artifact.uri, recursive=recursive)
+
+
+# Register the default scanner
+scanner_registry.register("collection:directory", LocalFileSystemScanner())
+
+
+class ManualCollectionScanner(Scanner):
+    """
+    A scanner for manual collections (e.g. 'collection:mix') that does not
+    scan any external source, but allows the collection to exist in the registry.
+    """
+
+    def scan(self, session: Session, artifact: Artifact, recursive: bool = True) -> int:
+        # Manual collections are populated by user action, not scanning
+        return 0
+
+
+scanner_registry.register("collection:mix", ManualCollectionScanner())

@@ -7,7 +7,10 @@ from .plugin_registry import PluginRegistry
 from .tag import Tag, ArtifactTagLink
 from .artifact_embedding import ArtifactEmbedding
 from .artifact_annotation import ArtifactAnnotation
+from .artifact_execution import ArtifactExecution
 from .collection import Collection, CollectionItem
+from .workflow import WorkflowArtifactMetadata, WorkflowPort, WorkflowImplementation
+from .config import AutoAnalysisConfig
 
 # Explicitly NOT exporting old models to force migration
 # from .collection import Collection, CollectionItem

@@ -71,3 +71,28 @@ class Artifact(SQLModel, table=True):
                 caps.update(a_type.resolve_capabilities(session))
 
         return list(caps)
+
+
+class ArtifactPreview(SQLModel, table=True):
+    """
+    Stores derived preview representations of artifacts
+    (thumbnails, low-res previews, waveforms, etc.)
+    """
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    artifact_id: UUID = Field(foreign_key="artifact.id", index=True)
+
+    # e.g. "thumbnail", "preview", "waveform"
+    preview_type: str = Field(index=True)
+
+    # e.g. "image/jpeg", "image/webp"
+    mime_type: str
+
+    # Where the preview lives
+    uri: str
+
+    # Size metadata (optional but useful)
+    width: Optional[int] = None
+    height: Optional[int] = None
+
+    plugin_name: Optional[str] = Field(index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
