@@ -64,12 +64,12 @@ class VectorStoreService:
         self._invalidate_cache(model_name, space)
 
     def search(self, query_vector: List[float], model_name: str,
-               limit: int = 50, space: str = "default") -> List[Dict[str, Any]]:
+               limit: int = 50, space: str = "default", session: Optional[Session] = None) -> List[Dict[str, Any]]:
         """
         Performs a similarity search using in-memory index.
         Loads index from DB if not cached.
         """
-        ids, vectors = self._load_index(model_name, space)
+        ids, vectors = self._load_index(model_name, space, session=session)
         if not ids:
             return []
 
@@ -93,7 +93,7 @@ class VectorStoreService:
 
         return results
 
-    def _load_index(self, model_name: str, space: str):
+    def _load_index(self, model_name: str, space: str, session: Optional[Session] = None):
         key = f"{model_name}:{space}"
         if key in self._cache:
             return self._cache[key]
@@ -101,7 +101,10 @@ class VectorStoreService:
         logger.info(
             f"Loading vector index for {model_name}/{space} from DB...")
 
-        with self.session_factory() as session:
+        from contextlib import nullcontext
+        ctx = nullcontext(session) if session else self.session_factory()
+
+        with ctx as session:
             # Fetch all embeddings for this model/space
             # Warning: accurate but memory heavy for millions of rows.
             # Production would use PGVector or dedicated vector DB.

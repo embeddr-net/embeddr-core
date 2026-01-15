@@ -59,6 +59,12 @@ class PluginAction(BaseModel):
     # e.g. "zen-overlay", "sidebar", "editor"
     ui_location: Optional[str] = None
 
+    # Action Graph Integration
+    # The job identifier if this is a programmable action
+    job_type: Optional[str] = None
+    # JSON Schema for the payload input
+    payload_schema: Optional[Dict[str, Any]] = None
+
 
 class FrontendComponent(BaseModel):
     """
