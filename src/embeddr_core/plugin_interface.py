@@ -79,6 +79,32 @@ class FrontendComponent(BaseModel):
     props: Dict[str, Any] = {}
 
 
+class FrontendAction(BaseModel):
+    """
+    A UI action rendered by the frontend (e.g. toolbox accordion items).
+    If component is provided, UI renders it inline (accordion).
+    If not, UI treats it as a button and calls handler (future) or triggers a server action.
+    """
+    name: str                 # unique ID within plugin
+    label: str
+    description: str = ""
+
+    # Name of exported React component in the plugin's JS bundle
+    component: Optional[str] = None
+
+    # Where in the UI it should appear (matches your getActions keys)
+    location: str = "zen-toolbox-action"  # e.g. "zen-toolbox-action"
+
+    # Lucide icon name (string) so frontend can map it
+    icon: Optional[str] = None
+
+    danger: bool = False
+    requires_confirmation: bool = False
+
+    # Optional props passed to component
+    props: Dict[str, Any] = {}
+
+
 class EmbeddrEvent(BaseModel):
     """
     Standard event envelope for inter-plugin communication.
@@ -164,6 +190,13 @@ class EmbeddrPlugin(ABC):
         """
         return []
 
+    @property
+    def frontend_actions(self) -> List[FrontendAction]:
+        """
+        List of frontend actions (e.g. toolbox items) this plugin provides.
+        """
+        return []
+
     def get_config_schema(self) -> Dict[str, Any]:
         """
         Return a JSON schema or a list of config items the plugin uses.
@@ -208,17 +241,17 @@ class EmbeddrPlugin(ABC):
 
     # --- CLI / API Hooks ---
 
-    def register_api(self, router: Any) -> None:
+    def register_api(self, api: Any) -> None:
         """
         Called if PluginIntent.REGISTER_API is present.
-        'router' is a scoped APIRouter instance prefixed with /api/v1/plugins/{plugin_name}.
+        'api' is a scoped APIRouter instance prefixed with /api/v1/plugins/{plugin_name}.
         """
         pass
 
-    def register_cli(self, cli_group: Any) -> None:
+    def register_cli(self, cli: Any) -> None:
         """
         Called if PluginIntent.REGISTER_CLI is present.
-        'cli_group' is a Typer instance scoped to the plugin name.
+        'cli' is a Typer instance scoped to the plugin name.
         """
         pass
 
