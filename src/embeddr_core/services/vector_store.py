@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 
@@ -7,8 +8,10 @@ import numpy as np
 from sqlmodel import Session, select
 
 from embeddr_core.models.artifact_embedding import ArtifactEmbedding
+from embeddr_core.services.config_service import resolve_plugin_config
+from embeddr_core.services.vector_index import vector_index_registry, VectorIndexEntry
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("embeddr.plugin.embeddr-vector-index.search")
 
 
 class VectorStoreService:
@@ -21,6 +24,55 @@ class VectorStoreService:
         self.session_factory = session_factory
         # Cache of loaded vectors: { model_name: { space: (ids, vectors) } }
         self._cache = {}
+
+    def _resolve_backend_name(self, session: Optional[Session] = None) -> str:
+        from contextlib import nullcontext
+
+        ctx = nullcontext(session) if session else self.session_factory()
+        try:
+            with ctx as active_session:
+                cfg = resolve_plugin_config(
+                    session=active_session,
+                    plugin_name="embeddr-vector-index",
+                    scope="global",
+                    scope_id=None,
+                    config_id="embeddr-vector-index.config",
+                )
+            backend = cfg.get("backend") if isinstance(cfg, dict) else None
+            if isinstance(backend, str) and backend:
+                return backend
+        except Exception:
+            logger.exception("Failed to resolve vector index backend config")
+        return "db"
+
+    def _resolve_log_search(self, session: Optional[Session] = None) -> bool:
+        from contextlib import nullcontext
+
+        ctx = nullcontext(session) if session else self.session_factory()
+        try:
+            with ctx as active_session:
+                cfg = resolve_plugin_config(
+                    session=active_session,
+                    plugin_name="embeddr-vector-index",
+                    scope="global",
+                    scope_id=None,
+                    config_id="embeddr-vector-index.config",
+                )
+            if isinstance(cfg, dict):
+                return bool(cfg.get("log_search"))
+        except Exception:
+            logger.exception("Failed to resolve vector index log_search config")
+        return False
+
+    def _resolve_backend(self, session: Optional[Session] = None):
+        backend_name = self._resolve_backend_name(session)
+        backend = vector_index_registry.get(backend_name)
+        if not backend and backend_name != "db":
+            logger.warning(
+                "Vector index backend '%s' not registered; falling back to db",
+                backend_name,
+            )
+        return backend, backend_name
 
     def get_connector(self, model_name: str, space: str = "default"):
         """
@@ -63,12 +115,65 @@ class VectorStoreService:
         # Invalidate cache for this space
         self._invalidate_cache(model_name, space)
 
+        backend, backend_name = self._resolve_backend(session)
+        if backend and backend_name != "db":
+            try:
+                backend.upsert(
+                    session,
+                    [
+                        VectorIndexEntry(
+                            artifact_id=artifact_id,
+                            model_name=model_name,
+                            space=space,
+                            vector=vector,
+                            vector_dim=vector_dim,
+                            plugin_name=plugin_name,
+                        )
+                    ],
+                )
+            except Exception:
+                logger.exception(
+                    "Vector index upsert failed backend=%s",
+                    backend_name,
+                )
+
     def search(self, query_vector: List[float], model_name: str,
                limit: int = 50, space: str = "default", session: Optional[Session] = None) -> List[Dict[str, Any]]:
         """
         Performs a similarity search using in-memory index.
         Loads index from DB if not cached.
         """
+        start = time.perf_counter()
+        log_search = self._resolve_log_search(session)
+        backend, backend_name = self._resolve_backend(session)
+        if backend and backend_name != "db":
+            from contextlib import nullcontext
+
+            ctx = nullcontext(session) if session else self.session_factory()
+            with ctx as active_session:
+                results = backend.search(
+                    active_session,
+                    query_vector=query_vector,
+                    model_name=model_name,
+                    space=space,
+                    limit=limit,
+                )
+            out = [
+                {"artifact_id": item.artifact_id, "score": item.score}
+                for item in results
+            ]
+            if log_search:
+                elapsed_ms = (time.perf_counter() - start) * 1000.0
+                logger.info(
+                    "vector.search backend=%s model=%s space=%s limit=%s took_ms=%.2f",
+                    backend_name,
+                    model_name,
+                    space,
+                    limit,
+                    elapsed_ms,
+                )
+            return out
+
         ids, vectors = self._load_index(model_name, space, session=session)
         if not ids:
             return []
@@ -91,6 +196,16 @@ class VectorStoreService:
                 "score": float(scores[idx])
             })
 
+        if log_search:
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            logger.info(
+                "vector.search backend=%s model=%s space=%s limit=%s took_ms=%.2f",
+                backend_name,
+                model_name,
+                space,
+                limit,
+                elapsed_ms,
+            )
         return results
 
     def _load_index(self, model_name: str, space: str, session: Optional[Session] = None):

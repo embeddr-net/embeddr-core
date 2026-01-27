@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlmodel import Field, SQLModel
 
 
@@ -7,4 +7,6 @@ class ImageLineage(SQLModel, table=True):
         default=None, foreign_key="localimage.id", primary_key=True)
     child_id: int | None = Field(
         default=None, foreign_key="localimage.id", primary_key=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )

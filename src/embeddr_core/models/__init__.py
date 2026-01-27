@@ -1,18 +1,20 @@
 from .artifact import Artifact
+from .artifact_blob import ArtifactBlob
+from .artifact_ingest import ArtifactIngest
 from .artifact_lineage import ArtifactLineage
 from .artifact_relation import ArtifactRelation
 from .artifact_type import ArtifactType
-from .transformation import Transformation
 from .plugin_registry import PluginRegistry
 from .tag import Tag, ArtifactTagLink
 from .artifact_embedding import ArtifactEmbedding
+from .artifact_feature import ArtifactFeatureRef
 from .artifact_annotation import ArtifactAnnotation
 from .artifact_execution import ArtifactExecution
-from .collection import Collection, CollectionItem
+from .artifact_execution_event import ArtifactExecutionEvent
 from .workflow import WorkflowArtifactMetadata, WorkflowPort, WorkflowImplementation
 from .config import AutoAnalysisConfig
 from .analysis_capability import AnalysisCapability
+from .plugin_config import PluginConfig
+from .automation import Automation
 
-# Explicitly NOT exporting old models to force migration
-# from .collection import Collection, CollectionItem
-# from .library import LibraryPath, LocalImage
+# Explicitly NOT exporting legacy models to avoid table registration

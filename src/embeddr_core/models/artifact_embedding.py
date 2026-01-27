@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 from uuid import UUID, uuid4
 from sqlmodel import Field, SQLModel, JSON
@@ -18,7 +18,9 @@ class ArtifactEmbedding(SQLModel, table=True):
     # Which plugin generated this?
     plugin_name: Optional[str] = Field(default=None, index=True)
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
     # The dimension of the vector, e.g. 512, 768
     vector_dim: int

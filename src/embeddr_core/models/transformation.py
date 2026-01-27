@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from uuid import UUID, uuid4
 from sqlmodel import Field, SQLModel, JSON
@@ -10,7 +10,9 @@ class Transformation(SQLModel, table=True):
     Captures 'what' happened (parameters), not 'how' (adapter internals).
     """
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
     # What plugin/adapter performed this? e.g. "embeddr-comfyui"
     plugin_name: Optional[str] = Field(default=None, index=True)

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 from typing import Optional, List
 from sqlmodel import Field, Relationship, SQLModel
@@ -14,7 +14,9 @@ class Collection(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     name: str = Field(index=True)
     description: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
     # Relationships
     items: List["CollectionItem"] = Relationship(
@@ -30,7 +32,9 @@ class CollectionItem(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     collection_id: UUID = Field(foreign_key="collection.id")
     artifact_id: UUID = Field(foreign_key="artifact.id")
-    added_at: datetime = Field(default_factory=datetime.utcnow)
+    added_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
     collection: Collection = Relationship(back_populates="items")
     # We don't necessarily need a back_populates on Artifact unless we want to access collections from artifact frequently

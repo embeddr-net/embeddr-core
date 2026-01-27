@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlmodel import Field, Relationship, SQLModel
 from embeddr_core.models.lineage import ImageLineage
@@ -12,7 +12,8 @@ class LibraryPath(SQLModel, table=True):
     name: str | None = Field(
         default=None, description="Optional display name.")
     created_at: datetime = Field(
-        default_factory=datetime.utcnow, description="Timestamp when the library was added.")
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Timestamp when the library was added.")
 
     images: list["LocalImage"] = Relationship(back_populates="library")
 
@@ -23,7 +24,9 @@ class LocalImage(SQLModel, table=True):
     filename: str
     library_path_id: int | None = Field(
         default=None, foreign_key="librarypath.id")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
     # Metadata
     width: int | None = None

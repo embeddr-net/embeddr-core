@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 from typing import Optional
 from sqlmodel import Field, SQLModel
@@ -25,4 +25,6 @@ class ArtifactAnnotation(SQLModel, table=True):
     # Confidence score (0.0 - 1.0) if applicable
     confidence: Optional[float] = None
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )

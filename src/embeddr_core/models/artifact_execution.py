@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from uuid import UUID, uuid4
 from sqlmodel import Field, SQLModel, JSON
@@ -45,7 +45,13 @@ class ArtifactExecution(SQLModel, table=True):
     primary_artifact_id: Optional[UUID] = Field(
         default=None, foreign_key="artifact.id", index=True)
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    # Parent execution (optional, for nested/parallel tracking)
+    parent_execution_id: Optional[UUID] = Field(
+        default=None, foreign_key="artifactexecution.id", index=True)
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
 

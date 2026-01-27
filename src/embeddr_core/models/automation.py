@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from uuid import UUID, uuid4
 from sqlmodel import Field, SQLModel, JSON
@@ -25,5 +25,12 @@ class Automation(SQLModel, table=True):
     # e.g. { "job_type": "comfy.generate", "inputs": { ... } }
     actions: List[Dict[str, Any]] = Field(default=[], sa_type=JSON)
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    # Optional metadata for UI/editor state (e.g. pipeline inputs schema)
+    metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_type=JSON)
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )

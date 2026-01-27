@@ -1,7 +1,8 @@
 import logging
 import os
 import time
-from typing import List
+from typing import List, Optional
+import httpx
 from uuid import UUID
 from datetime import datetime
 
@@ -11,11 +12,38 @@ from embeddr_core.models.artifact import Artifact, ArtifactPreview
 from embeddr_core.models.artifact_embedding import ArtifactEmbedding
 from embeddr_core.models.artifact_annotation import ArtifactAnnotation
 from embeddr_core.services import embedding
+from embeddr_core.services.feature_refs import upsert_feature_ref, build_feature_name
 # Note: We need to inject the VectorStoreService instance or access a global ONE.
 # For now, let's assume we can import a getter or instantiation logic
 # from embeddr_core.services.vector_store import get_vector_service
 
 logger = logging.getLogger(__name__)
+
+
+def _is_http_url(value: Optional[str]) -> bool:
+    if not value:
+        return False
+    return value.startswith("http://") or value.startswith("https://")
+
+
+def _download_remote_bytes(url: str, timeout_s: int = 30, max_bytes: int = 25 * 1024 * 1024) -> Optional[bytes]:
+    try:
+        with httpx.stream("GET", url, timeout=timeout_s) as response:
+            response.raise_for_status()
+            data = bytearray()
+            for chunk in response.iter_bytes():
+                if not chunk:
+                    continue
+                data.extend(chunk)
+                if len(data) > max_bytes:
+                    logger.warning(
+                        "Remote download exceeded max_bytes for %s", url)
+                    return None
+            return bytes(data)
+    except Exception as exc:
+        logger.warning(
+            "Failed to download remote content for %s: %s", url, exc)
+        return None
 
 
 def generate_embeddings_for_artifacts(
@@ -147,7 +175,52 @@ def generate_embeddings_for_artifacts(
                 if os.path.exists(thumb_path):
                     fpath = thumb_path
 
+        external_preview = None
+        try:
+            external_preview = (artifact.metadata_json or {}).get(
+                "external", {}).get("preview_url")
+        except Exception:
+            external_preview = None
+
         if not fpath or not os.path.exists(fpath):
+            remote_url = None
+            if _is_http_url(external_preview):
+                remote_url = external_preview
+            elif _is_http_url(fpath):
+                remote_url = fpath
+
+            if remote_url:
+                content = _download_remote_bytes(remote_url)
+                if not content:
+                    continue
+                current_batch.append(artifact)
+                current_batch_bytes.append(content)
+                if len(current_batch) >= batch_size:
+                    if progress_callback:
+                        progress_callback(
+                            processed,
+                            total_count,
+                            f"Processing batch {processed // batch_size + 1} ({len(current_batch)} items).",
+                        )
+                    start_ts = time.time()
+                    _process_batch(session, current_batch,
+                                   current_batch_bytes, model_name, plugin_name=plugin_name)
+                    duration = time.time() - start_ts
+
+                    processed += len(current_batch)
+                    if progress_callback:
+                        rate = len(current_batch) / \
+                            duration if duration > 0 else 0
+                        progress_callback(
+                            processed,
+                            total_count,
+                            f"Processed {processed}/{total_count} - Batch took {duration:.2f}s ({rate:.2f} it/s)",
+                        )
+
+                    current_batch = []
+                    current_batch_bytes = []
+                continue
+
             continue
 
         try:
@@ -212,6 +285,20 @@ def _save_embedding(session, artifact_id, vec, model_name, space="visual", plugi
             target.created_at = datetime.utcnow()
             session.add(target)
 
+            session.flush()
+            upsert_feature_ref(
+                session=session,
+                artifact_id=artifact_id,
+                feature_type="embedding",
+                name=build_feature_name(model_name, space),
+                storage_kind="sql_artifact_embedding",
+                storage_ref={"embedding_id": str(target.id)},
+                producer_plugin=plugin_name,
+                model_name=model_name,
+                space=space,
+                vector_dim=len(vec),
+            )
+
             for extra in existing[1:]:
                 session.delete(extra)
         else:
@@ -224,6 +311,19 @@ def _save_embedding(session, artifact_id, vec, model_name, space="visual", plugi
                 plugin_name=plugin_name
             )
             session.add(emb)
+            session.flush()
+            upsert_feature_ref(
+                session=session,
+                artifact_id=artifact_id,
+                feature_type="embedding",
+                name=build_feature_name(model_name, space),
+                storage_kind="sql_artifact_embedding",
+                storage_ref={"embedding_id": str(emb.id)},
+                producer_plugin=plugin_name,
+                model_name=model_name,
+                space=space,
+                vector_dim=len(vec),
+            )
     except Exception as e:
         logger.error(f"Failed to save embedding for {artifact_id}: {e}")
 
@@ -253,6 +353,19 @@ def _process_batch(session, artifacts: List[Artifact], images_bytes: List[bytes]
                     # Use existing space if set, or force? Default to current logic
                     # target.created_at = datetime.utcnow() # Optional update
                     session.add(target)
+                    session.flush()
+                    upsert_feature_ref(
+                        session=session,
+                        artifact_id=art.id,
+                        feature_type="embedding",
+                        name=build_feature_name(model_name, target.space),
+                        storage_kind="sql_artifact_embedding",
+                        storage_ref={"embedding_id": str(target.id)},
+                        producer_plugin=plugin_name,
+                        model_name=model_name,
+                        space=target.space,
+                        vector_dim=len(vec),
+                    )
                     for extra in existing[1:]:
                         session.delete(extra)
                 else:
@@ -265,6 +378,19 @@ def _process_batch(session, artifacts: List[Artifact], images_bytes: List[bytes]
                         plugin_name=plugin_name
                     )
                     session.add(emb)
+                    session.flush()
+                    upsert_feature_ref(
+                        session=session,
+                        artifact_id=art.id,
+                        feature_type="embedding",
+                        name=build_feature_name(model_name, "visual"),
+                        storage_kind="sql_artifact_embedding",
+                        storage_ref={"embedding_id": str(emb.id)},
+                        producer_plugin=plugin_name,
+                        model_name=model_name,
+                        space="visual",
+                        vector_dim=len(vec),
+                    )
 
         session.commit()
     except Exception as e:

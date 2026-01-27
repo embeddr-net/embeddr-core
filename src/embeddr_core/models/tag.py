@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 from typing import Optional, List
 from sqlmodel import Field, SQLModel, Relationship
@@ -19,7 +19,9 @@ class Tag(SQLModel, table=True):
     # E.g. "manual", "auto:classifier", "import"
     source: str = Field(default="user", index=True)
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
     # We don't necessarily need to load all artifacts for a tag within the model
     # but the link table exists for joins.

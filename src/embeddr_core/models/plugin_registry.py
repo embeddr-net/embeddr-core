@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from sqlmodel import Field, SQLModel, JSON
 
@@ -18,7 +18,9 @@ class PluginRegistry(SQLModel, table=True):
     plugin_type: str = Field(default="adapter", index=True)
 
     # Heartbeat
-    last_seen_at: datetime = Field(default_factory=datetime.utcnow)
+    last_seen_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
     # Information about what this plugin provides
     # e.g. ["image:comfy", "text:story"]
@@ -27,8 +29,12 @@ class PluginRegistry(SQLModel, table=True):
     # e.g. ["renderable", "execute_workflow"]
     contributed_capabilities: List[str] = Field(default=[], sa_type=JSON)
 
-    installed_at: datetime = Field(default_factory=datetime.utcnow)
-    last_seen_at: datetime = Field(default_factory=datetime.utcnow)
+    installed_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+    last_seen_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
     # Unstructured config or state for the plugin
     plugin_metadata: Dict[str, Any] = Field(default={}, sa_type=JSON)

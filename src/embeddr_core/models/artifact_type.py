@@ -1,4 +1,6 @@
 from typing import Optional, List, Dict, Any, Set
+
+from pydantic import BaseModel, Field as PydanticField
 from sqlmodel import Field, SQLModel, JSON, Relationship, Session
 
 
@@ -53,3 +55,15 @@ class ArtifactType(SQLModel, table=True):
             caps.update(current_type.default_capabilities)
 
         return list(caps)
+
+
+class ArtifactTypeSpec(BaseModel):
+    """
+    Declarative artifact type definition registered by plugins.
+    """
+
+    name: str
+    parent_name: Optional[str] = None
+    description: Optional[str] = None
+    default_capabilities: List[str] = PydanticField(default_factory=list)
+    metadata_json: Dict[str, Any] = PydanticField(default_factory=dict)

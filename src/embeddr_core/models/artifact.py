@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from uuid import UUID, uuid4
 from sqlmodel import Field, SQLModel, JSON, Relationship
@@ -11,7 +11,9 @@ class Artifact(SQLModel, table=True):
     Represents any user data (file, text, image, etc.)
     """
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
     # Universal resource indicator (optional, for files/urls)
     uri: Optional[str] = Field(default=None, index=True)
@@ -95,4 +97,6 @@ class ArtifactPreview(SQLModel, table=True):
     height: Optional[int] = None
 
     plugin_name: Optional[str] = Field(index=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )

@@ -2,7 +2,7 @@ import json
 import logging
 from typing import Dict, Any, List, Optional, Callable
 from uuid import UUID, uuid4
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
@@ -33,7 +33,7 @@ class ActionRunner:
             payload = {
                 "id": str(execution_id),
                 "status": status,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             if node_id:
                 payload["node_id"] = node_id
@@ -77,14 +77,14 @@ class ActionRunner:
                 progress=0,
                 primary_artifact_id=graph_artifact_id,
                 inputs=inputs,
-                created_at=datetime.utcnow(),
-                started_at=datetime.utcnow()
+                created_at=datetime.now(timezone.utc),
+                started_at=datetime.now(timezone.utc)
             )
             self.session.add(execution)
         else:
             # Update existing execution to running
             execution.status = "running"
-            execution.started_at = datetime.utcnow()
+            execution.started_at = datetime.now(timezone.utc)
             execution.primary_artifact_id = graph_artifact_id
             execution.inputs = inputs
             self.session.add(execution)
@@ -125,7 +125,7 @@ class ActionRunner:
 
             # 4. Finish
             execution.status = "completed"
-            execution.finished_at = datetime.utcnow()
+            execution.finished_at = datetime.now(timezone.utc)
             execution.progress = 100
             execution.outputs = self._collect_workflow_outputs(
                 graph, node_results)
@@ -138,7 +138,7 @@ class ActionRunner:
             logger.exception(f"{log_ctx} Workflow failed")
             execution.status = "failed"
             execution.error = str(e)
-            execution.finished_at = datetime.utcnow()
+            execution.finished_at = datetime.now(timezone.utc)
             self.session.add(execution)
             self.session.commit()
             raise e
@@ -199,8 +199,8 @@ class ActionRunner:
             status="running",
             inputs={
                 **node_inputs, "parent_execution_id": str(parent_execution_id), "node_id": node.id},
-            created_at=datetime.utcnow(),
-            started_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc),
+            started_at=datetime.now(timezone.utc)
         )
         self.session.add(node_exec)
         self.session.commit()
@@ -244,7 +244,7 @@ class ActionRunner:
 
             node_exec.status = "completed"
             node_exec.outputs = result  # Store full raw result
-            node_exec.finished_at = datetime.utcnow()
+            node_exec.finished_at = datetime.now(timezone.utc)
             node_exec.progress = 100
             self.session.add(node_exec)
             self.session.commit()
@@ -252,7 +252,7 @@ class ActionRunner:
         except Exception as e:
             node_exec.status = "failed"
             node_exec.error = str(e)
-            node_exec.finished_at = datetime.utcnow()
+            node_exec.finished_at = datetime.now(timezone.utc)
             self.session.add(node_exec)
             self.session.commit()
             raise e
@@ -285,7 +285,7 @@ class ActionRunner:
                             child_id=child_id,
                             relationship_metadata={
                                 "execution_id": str(execution.id)},
-                            created_at=datetime.utcnow()
+                            created_at=datetime.now(timezone.utc)
                         )
                         self.session.add(link)
 
@@ -311,7 +311,7 @@ class ActionRunner:
                 width=data.get("width"),
                 height=data.get("height"),
                 plugin_name=data.get("plugin_name"),
-                created_at=datetime.utcnow()
+                created_at=datetime.now(timezone.utc)
             )
             self.session.add(preview)
 
@@ -324,7 +324,7 @@ class ActionRunner:
                 annotation_type=data.get("annotation_type", "general"),
                 plugin_name=data.get("plugin_name"),
                 confidence=data.get("confidence", 1.0),
-                created_at=datetime.utcnow()
+                created_at=datetime.now(timezone.utc)
             )
             self.session.add(ann)
 
@@ -337,7 +337,7 @@ class ActionRunner:
                 vector_dim=len(data.get("vector")),
                 vector_json=data.get("vector"),
                 space=data.get("space", "default"),
-                created_at=datetime.utcnow()
+                created_at=datetime.now(timezone.utc)
             )
             self.session.add(emb)
 

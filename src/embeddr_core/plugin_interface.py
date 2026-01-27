@@ -1,6 +1,9 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from enum import Enum
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Literal, Optional
+from embeddr_core.models.lotus import LotusCapability
+from embeddr_core.models.artifact_type import ArtifactTypeSpec
 from pydantic import BaseModel
 from .models.analysis_capability import AnalysisCapability
 
@@ -15,19 +18,21 @@ class PluginIntent(str, Enum):
     REGISTER_CAPABILITY = "register_capability"
     REGISTER_ARTIFACT_TYPE = "register_artifact_type"
     ZEN_PANEL = "zen_panel"
+    DATABASE_ACCESS = "database_access"
+    EXECUTION_HANDLER = "execution_handler"  # Used for back-channel executions
+    DRAG_DROP_TARGET = "drag_drop_target"
     EVENT_LISTENER = "event_listener"
-    DATABASE_ACCESS = "database_access"  # Grants raw DB session access
-    EXECUTION_HANDLER = "execution_handler"  # Can handle ArtifactExecutions
-    DRAG_DROP_TARGET = "drag_drop_target"  # Accepts drag-and-drop of artifacts
-    # Registers as a core embedding provider
+    # Lotus-native intent markers
+    REGISTER_LOTUS = "register_lotus"
+    PROVIDE_SEARCH = "provide_search"
+    PROVIDE_INDEXER = "provide_indexer"
+    PROVIDE_STORAGE = "provide_storage"
+
+    # Deprecated: prefer Lotus capabilities instead of intent-specific logic
     PROVIDE_EMBEDDINGS = "provide_embeddings"
-    # Declares models and resource usage
     PROVIDE_MODEL_INSIGHTS = "provide_model_insights"
-    # Registers MCP tools
     REGISTER_MCP_TOOL = "register_mcp_tool"
-    # Registers MCP resources
     REGISTER_MCP_RESOURCE = "register_mcp_resource"
-    # Declares ability to perform automated analysis/actions on artifacts
     AUTO_ANALYSIS = "auto_analysis"
 
 
@@ -70,12 +75,48 @@ class FrontendComponent(BaseModel):
     """
     Defines a standalone UI component provided by the plugin.
     Unlike actions, these are mounted automatically by the frontend.
+    Deprecated in favor of explicit panel/page/widget registrations.
     """
     name: str  # Unique ID within plugin
     component: str  # Name of exported component in bundle
     location: str  # "zen-toolbox-tab", "sidebar", "header", etc.
     label: Optional[str] = None
     icon: Optional[str] = None  # Lucide icon name string
+    props: Dict[str, Any] = {}
+
+
+class PanelComponent(BaseModel):
+    """
+    A Zen UI panel component (draggable, chromed by the Zen shell).
+    """
+    name: str
+    component: str
+    label: Optional[str] = None
+    icon: Optional[str] = None
+    props: Dict[str, Any] = {}
+
+
+class PageComponent(BaseModel):
+    """
+    A routed page component, mounted on its own route.
+    """
+    name: str
+    component: str
+    route: str
+    label: Optional[str] = None
+    icon: Optional[str] = None
+    props: Dict[str, Any] = {}
+
+
+class WidgetComponent(BaseModel):
+    """
+    A command-bar widget (compact UI surface, e.g. clock, counter, action chip).
+    """
+    name: str
+    component: str
+    label: Optional[str] = None
+    icon: Optional[str] = None
+    slot: Optional[str] = None  # Optional placement hint for command bar
     props: Dict[str, Any] = {}
 
 
@@ -115,6 +156,39 @@ class EmbeddrEvent(BaseModel):
     timestamp: float = 0.0
 
 
+ToastVariant = Literal["default", "success", "error", "destructive"]
+
+
+@dataclass
+class UIHandle:
+    bus: Any
+
+    def toast(
+        self,
+        title: str,
+        description: str = "",
+        variant: ToastVariant = "default",
+        *,
+        source: str = "plugin",
+        id: Optional[str] = None,
+    ) -> None:
+        payload: Dict[str, Any] = {
+            "title": title,
+            "description": description,
+            "variant": variant,
+        }
+        if id:
+            payload["id"] = id
+        self.bus.emit("ui:toast", payload, source=source)
+
+    def navigate(self, route: str, *, source: str = "plugin") -> None:
+        self.bus.emit("ui:navigate", {"route": route}, source=source)
+
+    def open_artifact(self, artifact_id: str, *, source: str = "plugin") -> None:
+        self.bus.emit("ui:open_artifact", {
+                      "artifact_id": artifact_id}, source=source)
+
+
 class EventBus(ABC):
     """
     Interface for the system event bus.
@@ -138,6 +212,10 @@ class PluginContext(BaseModel):
     capability_registry: Optional[Dict[str, Any]] = None
     resources: Optional[Any] = None  # Typically ResourceManager
     # We can add db_engine, config, etc here later if needed
+
+    @property
+    def ui(self) -> UIHandle:
+        return UIHandle(self.bus)
 
     model_config = {
         "arbitrary_types_allowed": True,
@@ -187,6 +265,28 @@ class EmbeddrPlugin(ABC):
     def frontend_components(self) -> List[FrontendComponent]:
         """
         List of frontend components this plugin provides.
+        Deprecated: prefer panels/pages/widgets.
+        """
+        return []
+
+    @property
+    def panels(self) -> List[PanelComponent]:
+        """
+        Zen UI panels provided by this plugin.
+        """
+        return []
+
+    @property
+    def pages(self) -> List[PageComponent]:
+        """
+        Routed pages provided by this plugin.
+        """
+        return []
+
+    @property
+    def widgets(self) -> List[WidgetComponent]:
+        """
+        Command-bar widgets provided by this plugin.
         """
         return []
 
@@ -292,6 +392,13 @@ class EmbeddrPlugin(ABC):
         """
         return []
 
+    def provided_artifact_types(self) -> List[ArtifactTypeSpec]:
+        """
+        Return declarative artifact types for core reconciliation.
+        Prefer this over register_types for schema contributions.
+        """
+        return []
+
     def execute(self, action_name: str, execution_id: Any, inputs: Dict[str, Any], context: Optional[PluginContext] = None) -> Dict[str, Any]:
         """
         Execute an action defined by this plugin.
@@ -307,8 +414,47 @@ class EmbeddrPlugin(ABC):
         """
         return []
 
+    # --- LOTUS HOOKS --- #
+
+    def register_lotus(self) -> list[LotusCapability]:
+        """
+        Register Lotus capabilities provided by this plugin.
+        """
+        return []
+
     # --- Deprecated Hooks (kept for backward compat if any) ---
 
     def load(self, context=None):
         """Deprecated: Use on_load instead."""
         self.on_load(context)
+
+
+class SimplePlugin(EmbeddrPlugin):
+    """
+    Convenience base class for plugins that only need a static name/version.
+    Set PLUGIN_NAME and PLUGIN_VERSION on the subclass and you can omit
+    explicit name/version properties.
+    """
+
+    PLUGIN_NAME: str = ""
+    PLUGIN_VERSION: str = ""
+
+    @property
+    def name(self) -> str:
+        if not self.PLUGIN_NAME:
+            raise ValueError("PLUGIN_NAME must be set on SimplePlugin")
+        return self.PLUGIN_NAME
+
+    @property
+    def version(self) -> str:
+        if not self.PLUGIN_VERSION:
+            raise ValueError("PLUGIN_VERSION must be set on SimplePlugin")
+        return self.PLUGIN_VERSION
+
+
+class LotusPlugin(SimplePlugin):
+    """
+    Brand-aligned alias for SimplePlugin.
+    """
+
+    pass
