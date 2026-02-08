@@ -1,15 +1,22 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Dict, Any, Literal, Optional
+import logging
+import os
+from typing import List, Dict, Any, Literal, Optional, Protocol, Union
 from embeddr_core.models.lotus import LotusCapability
 from embeddr_core.models.artifact_type import ArtifactTypeSpec
 from pydantic import BaseModel
-from .models.analysis_capability import AnalysisCapability
+
+logger = logging.getLogger("embeddr.core.plugin_context")
 
 # Since we don't want to depend on FastAPI/Typer directly in Core if possible,
 # we use Any for the app/cli objects, or strict types if we add deps.
 # For now, let's keep it loose to avoid polluting core with CLI deps.
+
+
+def _context_trace_enabled() -> bool:
+    return os.environ.get("EMBEDDR_CONTEXT_TRACE") == "1"
 
 
 class PluginIntent(str, Enum):
@@ -18,6 +25,7 @@ class PluginIntent(str, Enum):
     REGISTER_CAPABILITY = "register_capability"
     REGISTER_ARTIFACT_TYPE = "register_artifact_type"
     ZEN_PANEL = "zen_panel"
+    ZEN_DOCK = "zen_dock"
     DATABASE_ACCESS = "database_access"
     EXECUTION_HANDLER = "execution_handler"  # Used for back-channel executions
     DRAG_DROP_TARGET = "drag_drop_target"
@@ -32,8 +40,12 @@ class PluginIntent(str, Enum):
     PROVIDE_EMBEDDINGS = "provide_embeddings"
     PROVIDE_MODEL_INSIGHTS = "provide_model_insights"
     REGISTER_MCP_TOOL = "register_mcp_tool"
-    REGISTER_MCP_RESOURCE = "register_mcp_resource"
-    AUTO_ANALYSIS = "auto_analysis"
+
+
+class PluginEventType(str, Enum):
+    UI_TOAST = "ui:toast"
+    UI_NAVIGATE = "ui:navigate"
+    UI_OPEN_ARTIFACT = "ui:open_artifact"
 
 
 class PluginAction(BaseModel):
@@ -85,6 +97,28 @@ class FrontendComponent(BaseModel):
     props: Dict[str, Any] = {}
 
 
+class PanelUI(BaseModel):
+    """
+    Typed UI options for Zen panels.
+    """
+
+    hideHeader: bool = False
+    transparent: bool = False
+    instanceMode: Literal["single", "multiple"] = "multiple"
+    spawnOnly: bool = False
+
+
+class DockUI(BaseModel):
+    """
+    Typed UI options for Zen docks.
+    """
+
+    placement: Literal["bottom", "top", "left", "right"] = "bottom"
+    sticky: bool = True
+    autoHide: bool = False
+    transparent: bool = False
+
+
 class PanelComponent(BaseModel):
     """
     A Zen UI panel component (draggable, chromed by the Zen shell).
@@ -94,6 +128,20 @@ class PanelComponent(BaseModel):
     label: Optional[str] = None
     icon: Optional[str] = None
     props: Dict[str, Any] = {}
+    options: Optional[PanelUI] = None
+
+
+class DockComponent(BaseModel):
+    """
+    A Zen dock component (sticky surface, like a music player or launcher).
+    """
+
+    name: str
+    component: str
+    label: Optional[str] = None
+    icon: Optional[str] = None
+    props: Dict[str, Any] = {}
+    options: Optional[DockUI] = None
 
 
 class PageComponent(BaseModel):
@@ -117,6 +165,18 @@ class WidgetComponent(BaseModel):
     label: Optional[str] = None
     icon: Optional[str] = None
     slot: Optional[str] = None  # Optional placement hint for command bar
+    props: Dict[str, Any] = {}
+
+
+class ConfigRendererComponent(BaseModel):
+    """
+    Custom config UI renderer for a Lotus config capability.
+    """
+    name: str
+    component: str
+    config_id: str
+    label: Optional[str] = None
+    description: Optional[str] = None
     props: Dict[str, Any] = {}
 
 
@@ -179,14 +239,18 @@ class UIHandle:
         }
         if id:
             payload["id"] = id
-        self.bus.emit("ui:toast", payload, source=source)
+        self.bus.emit(PluginEventType.UI_TOAST.value, payload, source=source)
 
     def navigate(self, route: str, *, source: str = "plugin") -> None:
-        self.bus.emit("ui:navigate", {"route": route}, source=source)
+        self.bus.emit(PluginEventType.UI_NAVIGATE.value,
+                      {"route": route}, source=source)
 
     def open_artifact(self, artifact_id: str, *, source: str = "plugin") -> None:
-        self.bus.emit("ui:open_artifact", {
-                      "artifact_id": artifact_id}, source=source)
+        self.bus.emit(
+            PluginEventType.UI_OPEN_ARTIFACT.value,
+            {"artifact_id": artifact_id},
+            source=source,
+        )
 
 
 class EventBus(ABC):
@@ -211,16 +275,59 @@ class PluginContext(BaseModel):
     # Use Dict[str, Any] for maximum compatibility
     capability_registry: Optional[Dict[str, Any]] = None
     resources: Optional[Any] = None  # Typically ResourceManager
+    config: Optional[Dict[str, Any]] = None
+    lotus: Optional[Any] = None
     # We can add db_engine, config, etc here later if needed
 
     @property
     def ui(self) -> UIHandle:
+        if _context_trace_enabled():
+            logger.info("[ContextTrace] ui")
         return UIHandle(self.bus)
 
     model_config = {
         "arbitrary_types_allowed": True,
         "extra": "allow"  # Allow extra fields to avoid AttributeError during migrations
     }
+
+    def get_config(self) -> Dict[str, Any]:
+        if _context_trace_enabled():
+            logger.info("[ContextTrace] config")
+        return self.config or {}
+
+    def get_resources(self) -> Optional[Any]:
+        if _context_trace_enabled():
+            logger.info("[ContextTrace] resources")
+        return self.resources
+
+    def get_bus(self) -> Optional[Any]:
+        if _context_trace_enabled():
+            logger.info("[ContextTrace] bus")
+        return self.bus
+
+    def get_registry(self) -> Optional[Dict[str, Any]]:
+        if _context_trace_enabled():
+            logger.info("[ContextTrace] capability_registry")
+        return self.capability_registry
+
+    def lotus_invoke(self, cap_id: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        if _context_trace_enabled():
+            logger.info("[ContextTrace] lotus.invoke cap_id=%s", cap_id)
+        if self.lotus is not None:
+            return self.lotus.invoke_action(cap_id, inputs)
+
+        from embeddr_core.services.lotus_client import invoke_action_for_plugin
+
+        return invoke_action_for_plugin(
+            cap_id=cap_id,
+            inputs=inputs,
+            context=self,
+        )
+
+
+class LotusInvoker(Protocol):
+    def invoke_action(self, cap_id: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        ...
 
 
 class EmbeddrPlugin(ABC):
@@ -254,14 +361,6 @@ class EmbeddrPlugin(ABC):
         return []
 
     @property
-    def analysis_capabilities(self) -> List[AnalysisCapability]:
-        """
-        List of auto-analysis capabilities this plugin provides.
-        Only used if intent includes AUTO_ANALYSIS.
-        """
-        return []
-
-    @property
     def frontend_components(self) -> List[FrontendComponent]:
         """
         List of frontend components this plugin provides.
@@ -273,8 +372,24 @@ class EmbeddrPlugin(ABC):
     def panels(self) -> List[PanelComponent]:
         """
         Zen UI panels provided by this plugin.
+        Deprecated: prefer register_zen().
         """
-        return []
+        return [
+            comp
+            for comp in (self.register_zen() or [])
+            if isinstance(comp, PanelComponent)
+        ]
+
+    @property
+    def docks(self) -> List[DockComponent]:
+        """
+        Zen UI docks provided by this plugin.
+        """
+        return [
+            comp
+            for comp in (self.register_zen() or [])
+            if isinstance(comp, DockComponent)
+        ]
 
     @property
     def pages(self) -> List[PageComponent]:
@@ -289,6 +404,17 @@ class EmbeddrPlugin(ABC):
         Command-bar widgets provided by this plugin.
         """
         return []
+
+    @property
+    def config_renderers(self) -> List[ConfigRendererComponent]:
+        """
+        Custom config renderers provided by this plugin.
+        """
+        return [
+            comp
+            for comp in (self.register_zen() or [])
+            if isinstance(comp, ConfigRendererComponent)
+        ]
 
     @property
     def frontend_actions(self) -> List[FrontendAction]:
@@ -419,6 +545,14 @@ class EmbeddrPlugin(ABC):
     def register_lotus(self) -> list[LotusCapability]:
         """
         Register Lotus capabilities provided by this plugin.
+        """
+        return []
+
+    def register_zen(
+        self,
+    ) -> List[Union[PanelComponent, DockComponent, ConfigRendererComponent]]:
+        """
+        Register Zen UI panels and config renderers provided by this plugin.
         """
         return []
 

@@ -6,6 +6,7 @@ from uuid import UUID
 
 import numpy as np
 from sqlmodel import Session, select
+from sqlalchemy import func
 
 from embeddr_core.models.artifact_embedding import ArtifactEmbedding
 from embeddr_core.services.config_service import resolve_plugin_config
@@ -24,6 +25,7 @@ class VectorStoreService:
         self.session_factory = session_factory
         # Cache of loaded vectors: { model_name: { space: (ids, vectors) } }
         self._cache = {}
+        self._cache_meta: Dict[str, Dict[str, Any]] = {}
 
     def _resolve_backend_name(self, session: Optional[Session] = None) -> str:
         from contextlib import nullcontext
@@ -61,7 +63,8 @@ class VectorStoreService:
             if isinstance(cfg, dict):
                 return bool(cfg.get("log_search"))
         except Exception:
-            logger.exception("Failed to resolve vector index log_search config")
+            logger.exception(
+                "Failed to resolve vector index log_search config")
         return False
 
     def _resolve_backend(self, session: Optional[Session] = None):
@@ -211,7 +214,35 @@ class VectorStoreService:
     def _load_index(self, model_name: str, space: str, session: Optional[Session] = None):
         key = f"{model_name}:{space}"
         if key in self._cache:
-            return self._cache[key]
+            now = time.time()
+            meta = self._cache_meta.get(key) or {}
+            last_checked = float(meta.get("last_checked") or 0)
+            if now - last_checked < 5:
+                return self._cache[key]
+
+            from contextlib import nullcontext
+            ctx = nullcontext(session) if session else self.session_factory()
+            with ctx as active_session:
+                stmt = select(
+                    func.count(ArtifactEmbedding.id),
+                    func.max(ArtifactEmbedding.created_at),
+                ).where(
+                    ArtifactEmbedding.model_name == model_name,
+                    ArtifactEmbedding.space == space,
+                )
+                count, max_created = active_session.exec(stmt).one()
+
+            cached_count = meta.get("count")
+            cached_max = meta.get("max_created_at")
+            if cached_count == count and cached_max == max_created:
+                self._cache_meta[key] = {
+                    "count": count,
+                    "max_created_at": max_created,
+                    "last_checked": now,
+                }
+                return self._cache[key]
+
+            self._invalidate_cache(model_name, space)
 
         logger.info(
             f"Loading vector index for {model_name}/{space} from DB...")
@@ -231,13 +262,29 @@ class VectorStoreService:
 
             if not results:
                 self._cache[key] = ([], np.array([]))
+                self._cache_meta[key] = {
+                    "count": 0,
+                    "max_created_at": None,
+                    "last_checked": time.time(),
+                }
                 return [], np.array([])
 
             ids = [r[0] for r in results]
             # Convert list of floats to numpy array
             vectors = np.array([r[1] for r in results]).astype('float32')
 
+            max_created = session.exec(
+                select(func.max(ArtifactEmbedding.created_at)).where(
+                    ArtifactEmbedding.model_name == model_name,
+                    ArtifactEmbedding.space == space,
+                )
+            ).one()
             self._cache[key] = (ids, vectors)
+            self._cache_meta[key] = {
+                "count": len(ids),
+                "max_created_at": max_created,
+                "last_checked": time.time(),
+            }
             logger.info(f"Loaded {len(ids)} vectors.")
             return ids, vectors
 
@@ -245,6 +292,20 @@ class VectorStoreService:
         key = f"{model_name}:{space}"
         if key in self._cache:
             del self._cache[key]
+        if key in self._cache_meta:
+            del self._cache_meta[key]
+
+    def invalidate_cache(self, model_name: Optional[str] = None, space: Optional[str] = None) -> None:
+        if model_name and space:
+            self._invalidate_cache(model_name, space)
+            return
+        if model_name:
+            keys = [k for k in self._cache if k.startswith(f"{model_name}:")]
+        else:
+            keys = list(self._cache.keys())
+        for key in keys:
+            self._cache.pop(key, None)
+            self._cache_meta.pop(key, None)
 
 
 class VectorSpaceConnector:

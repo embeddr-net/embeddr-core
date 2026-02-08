@@ -13,8 +13,11 @@ from .artifact_execution import ArtifactExecution
 from .artifact_execution_event import ArtifactExecutionEvent
 from .workflow import WorkflowArtifactMetadata, WorkflowPort, WorkflowImplementation
 from .config import AutoAnalysisConfig
-from .analysis_capability import AnalysisCapability
 from .plugin_config import PluginConfig
 from .automation import Automation
+from .operator import Operator
+from .user_account import UserAccount, UserRole
+from .role import Role, RolePermission
+from .api_key import ApiKey, ApiKeyPermission
 
 # Explicitly NOT exporting legacy models to avoid table registration

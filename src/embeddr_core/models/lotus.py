@@ -2,7 +2,7 @@
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class LotusKind(str, Enum):
@@ -71,6 +71,44 @@ class LotusIOType(BaseModel):
     }
 
 
+class LotusUI(BaseModel):
+    badge: Optional[str] = None
+    icon: Optional[str] = None
+    icon_url: Optional[str] = Field(default=None, alias="iconUrl")
+    color: Optional[str] = None
+    label: Optional[str] = None
+    description: Optional[str] = None
+
+    model_config = {
+        "populate_by_name": True,
+        "extra": "allow",
+    }
+
+
+class LotusAction(BaseModel):
+    action: Optional[str] = None
+    job_type: Optional[str] = None
+    exec: Dict[str, Any] = Field(default_factory=dict)
+    expose: Dict[str, Any] = Field(default_factory=dict)
+    input: Optional[Dict[str, Any]] = None
+    output: Optional[Dict[str, Any]] = None
+
+    model_config = {
+        "extra": "allow",
+    }
+
+
+class LotusQuery(BaseModel):
+    query: Optional[str] = None
+    slot: Optional[str] = None
+    input: Optional[Dict[str, Any]] = None
+    output: Optional[Dict[str, Any]] = None
+
+    model_config = {
+        "extra": "allow",
+    }
+
+
 class LotusCapability(BaseModel):
     """
     Represents a capability or skill that the Lotus system can utilize.
@@ -95,6 +133,45 @@ class LotusCapability(BaseModel):
     # Capability dependencies
     requires: List[str] = Field(default_factory=list)
     provides: List[str] = Field(default_factory=list)
+
+    # Typed capability payloads (preferred over raw data)
+    ui: Optional[LotusUI] = None
+    action: Optional[LotusAction] = None
+    query: Optional[LotusQuery] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_typed_fields(cls, values):
+        if not isinstance(values, dict):
+            return values
+
+        data = values.get("data") or {}
+        if isinstance(data, dict):
+            if values.get("ui") is None and data.get("ui") is not None:
+                values["ui"] = data.get("ui")
+
+            if values.get("action") is None and any(
+                key in data
+                for key in ("action", "job_type", "exec", "expose", "input", "output")
+            ):
+                values["action"] = {
+                    "action": data.get("action"),
+                    "job_type": data.get("job_type"),
+                    "exec": data.get("exec") or {},
+                    "expose": data.get("expose") or {},
+                    "input": data.get("input"),
+                    "output": data.get("output"),
+                }
+
+            if values.get("query") is None and data.get("query") is not None:
+                values["query"] = {
+                    "query": data.get("query"),
+                    "slot": data.get("slot"),
+                    "input": data.get("input"),
+                    "output": data.get("output"),
+                }
+
+        return values
 
 
 class LotusResult(BaseModel):

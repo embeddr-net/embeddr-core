@@ -346,9 +346,12 @@ def _process_batch(session, artifacts: List[Artifact], images_bytes: List[bytes]
                     )
                 ).all()
 
+                # Robust conversion to list
+                vec_list = vec.tolist() if hasattr(vec, "tolist") else list(vec)
+
                 if existing:
                     target = existing[0]
-                    target.vector_json = vec.tolist()
+                    target.vector_json = vec_list
                     target.vector_dim = len(vec)
                     # Use existing space if set, or force? Default to current logic
                     # target.created_at = datetime.utcnow() # Optional update
@@ -373,7 +376,7 @@ def _process_batch(session, artifacts: List[Artifact], images_bytes: List[bytes]
                         artifact_id=art.id,
                         model_name=model_name,
                         vector_dim=len(vec),
-                        vector_json=vec.tolist(),
+                        vector_json=vec_list,
                         space="visual",
                         plugin_name=plugin_name
                     )

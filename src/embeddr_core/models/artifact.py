@@ -15,6 +15,14 @@ class Artifact(SQLModel, table=True):
         default_factory=lambda: datetime.now(timezone.utc)
     )
 
+    # Owner (optional for single-user/default mode)
+    owner_user_id: Optional[UUID] = Field(
+        default=None, foreign_key="useraccount.id", index=True
+    )
+    owner_operator_id: Optional[UUID] = Field(
+        default=None, foreign_key="operator.id", index=True
+    )
+
     # Universal resource indicator (optional, for files/urls)
     uri: Optional[str] = Field(default=None, index=True)
 

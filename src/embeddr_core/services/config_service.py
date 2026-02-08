@@ -11,13 +11,30 @@ from sqlalchemy import or_
 
 from embeddr_core.models.lotus import LotusKind
 from embeddr_core.models.plugin_config import PluginConfig
-from embeddr.core.plugin_loader import get_lotus_registry
 
 logger = logging.getLogger("embeddr.core.config")
 
 
 def _should_trace() -> bool:
     return os.environ.get("EMBEDDR_LOTUS_TRACE") == "1"
+
+
+def _lazy_get_lotus_registry():
+    try:
+        from embeddr.core.plugin_loader import get_lotus_registry as _get_lotus_registry
+    except Exception:
+        return None
+    return _get_lotus_registry
+
+
+def get_lotus_registry():
+    """
+    Lazy accessor to avoid circular imports during plugin loading.
+    """
+    getter = _lazy_get_lotus_registry()
+    if not getter:
+        raise RuntimeError("Lotus registry unavailable")
+    return getter()
 
 
 def _redact(value: Dict[str, Any]) -> Dict[str, Any]:
@@ -35,7 +52,11 @@ def _find_config_capability(plugin_name: str) -> Optional[Tuple[str, Dict[str, A
     Find the config capability for a plugin.
     Returns (cap_id, cap.data) or None.
     """
-    reg = get_lotus_registry()
+    getter = _lazy_get_lotus_registry()
+    if not getter:
+        return None
+
+    reg = getter()
     caps = reg.list(kind=LotusKind.config, plugin=plugin_name)
     if not caps:
         return None
@@ -45,7 +66,11 @@ def _find_config_capability(plugin_name: str) -> Optional[Tuple[str, Dict[str, A
 
 
 def _find_config_capability_by_id(cap_id: str) -> Optional[Tuple[str, Dict[str, Any]]]:
-    reg = get_lotus_registry()
+    getter = _lazy_get_lotus_registry()
+    if not getter:
+        return None
+
+    reg = getter()
     cap = reg.get(cap_id)
     if not cap or cap.kind != LotusKind.config:
         return None
@@ -77,8 +102,12 @@ def resolve_plugin_config(
     Returns the effective config:
       schema-defaults < capability.input.defaults < stored-config
     """
+    resolved_config_id = config_id
+    if config_id and plugin_name and not config_id.startswith(f"{plugin_name}."):
+        resolved_config_id = f"{plugin_name}.{config_id}"
+
     cap_info = _find_config_capability_by_id(
-        config_id) if config_id else _find_config_capability(plugin_name)
+        resolved_config_id) if resolved_config_id else _find_config_capability(plugin_name)
     if not cap_info:
         if _should_trace():
             logger.info(
@@ -99,13 +128,15 @@ def resolve_plugin_config(
         effective.update(cap_defaults)
 
     effective_plugin = plugin_name
-    if config_id:
-        reg = get_lotus_registry()
-        cap = reg.get(config_id)
-        if cap and cap.plugin:
-            effective_plugin = cap.plugin
+    if resolved_config_id:
+        getter = _lazy_get_lotus_registry()
+        if getter:
+            reg = getter()
+            cap = reg.get(resolved_config_id)
+            if cap and cap.plugin:
+                effective_plugin = cap.plugin
 
-    config_key = config_id or "default"
+    config_key = resolved_config_id or "default"
 
     stmt = select(PluginConfig).where(
         PluginConfig.plugin_name == effective_plugin,
@@ -125,7 +156,7 @@ def resolve_plugin_config(
         logger.info(
             "[ConfigTrace] plugin=%s config_id=%s config_key=%s cap_id=%s defaults=%s row_found=%s value=%s",
             plugin_name,
-            config_id,
+            resolved_config_id,
             config_key,
             cap_info[0],
             _redact(cap_defaults if isinstance(cap_defaults, dict) else {}),
@@ -134,6 +165,35 @@ def resolve_plugin_config(
         )
 
     return effective
+
+
+def resolve_plugin_config_for_plugin(
+    *,
+    plugin_name: str,
+    scope: str = "global",
+    scope_id: Optional[str] = None,
+    config_id: Optional[str] = None,
+    engine: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """
+    Convenience helper that manages the DB session.
+    """
+    if engine is None:
+        try:
+            from embeddr.db.session import get_engine  # type: ignore
+        except Exception as exc:  # pragma: no cover - optional runtime import
+            raise RuntimeError(
+                "No database engine available for config lookup") from exc
+        engine = get_engine()
+
+    with Session(engine) as session:
+        return resolve_plugin_config(
+            session=session,
+            plugin_name=plugin_name,
+            scope=scope,
+            scope_id=scope_id,
+            config_id=config_id,
+        )
 
 
 def set_plugin_config(
@@ -148,8 +208,12 @@ def set_plugin_config(
     """
     Validate (if model exists), then persist.
     """
+    resolved_config_id = config_id
+    if config_id and plugin_name and not config_id.startswith(f"{plugin_name}."):
+        resolved_config_id = f"{plugin_name}.{config_id}"
+
     cap_info = _find_config_capability_by_id(
-        config_id) if config_id else _find_config_capability(plugin_name)
+        resolved_config_id) if resolved_config_id else _find_config_capability(plugin_name)
     if not cap_info:
         raise ValueError(
             f"No config capability registered for plugin: {plugin_name}")
@@ -164,13 +228,15 @@ def set_plugin_config(
         value = obj.model_dump()
 
     effective_plugin = plugin_name
-    if config_id:
-        reg = get_lotus_registry()
-        cap = reg.get(config_id)
-        if cap and cap.plugin:
-            effective_plugin = cap.plugin
+    if resolved_config_id:
+        getter = _lazy_get_lotus_registry()
+        if getter:
+            reg = getter()
+            cap = reg.get(resolved_config_id)
+            if cap and cap.plugin:
+                effective_plugin = cap.plugin
 
-    config_key = config_id or "default"
+    config_key = resolved_config_id or "default"
 
     stmt = select(PluginConfig).where(
         PluginConfig.plugin_name == effective_plugin,
