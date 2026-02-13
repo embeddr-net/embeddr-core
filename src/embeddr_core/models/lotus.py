@@ -147,6 +147,14 @@ class LotusCapability(BaseModel):
 
         data = values.get("data") or {}
         if isinstance(data, dict):
+            # Ensure plugin_name/action_name are set from capability plugin field
+            plugin_id = values.get("plugin")
+            if plugin_id and not data.get("plugin_name") and not data.get("plugin"):
+                data["plugin_name"] = plugin_id
+            # Normalize: if only "plugin" key, also set "plugin_name"
+            if data.get("plugin") and not data.get("plugin_name"):
+                data["plugin_name"] = data["plugin"]
+
             if values.get("ui") is None and data.get("ui") is not None:
                 values["ui"] = data.get("ui")
 
@@ -155,7 +163,7 @@ class LotusCapability(BaseModel):
                 for key in ("action", "job_type", "exec", "expose", "input", "output")
             ):
                 values["action"] = {
-                    "action": data.get("action"),
+                    "action": data.get("action") or data.get("action_name"),
                     "job_type": data.get("job_type"),
                     "exec": data.get("exec") or {},
                     "expose": data.get("expose") or {},
@@ -170,6 +178,8 @@ class LotusCapability(BaseModel):
                     "input": data.get("input"),
                     "output": data.get("output"),
                 }
+
+            values["data"] = data
 
         return values
 

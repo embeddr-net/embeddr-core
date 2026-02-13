@@ -31,7 +31,6 @@ class LotusRegistry:
             cap = cap.model_copy(update={"data": data})
         self._by_id[cap.id] = cap
         self._validate_capability(cap)
-        self._check_dependencies(cap)
 
     def get(self, cap_id: str) -> Optional[LotusCapability]:
         return self._by_id.get(cap_id)
@@ -70,13 +69,20 @@ class LotusRegistry:
         data = cap.data or {}
         if cap.kind in {LotusKind.action, LotusKind.provider, LotusKind.resolver, LotusKind.indexer}:
             if not cap.slot:
-                logger.warning("Lotus capability %s missing slot", cap.id)
-        if cap.kind == LotusKind.action and not data.get("action"):
-            logger.warning("Lotus action %s missing data.action", cap.id)
+                logger.debug("Lotus capability %s has no slot", cap.id)
+        # Check both the typed LotusAction field and the raw data dict
+        if cap.kind == LotusKind.action:
+            has_action = (
+                (cap.action and cap.action.action)
+                or data.get("action")
+            )
+            if not has_action:
+                logger.warning("Lotus action %s missing action", cap.id)
         if cap.kind == LotusKind.config and not data.get("input"):
             logger.warning("Lotus config %s missing data.input", cap.id)
-        if cap.kind == LotusKind.nav and not data.get("route"):
-            logger.warning("Lotus nav %s missing data.route", cap.id)
+        if cap.kind == LotusKind.nav and not (data.get("route") or data.get("action")):
+            logger.warning(
+                "Lotus nav %s missing data.route or data.action", cap.id)
 
     def _check_dependencies(self, cap: LotusCapability) -> None:
         requires = list(cap.requires or [])

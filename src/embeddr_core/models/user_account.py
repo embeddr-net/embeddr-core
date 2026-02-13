@@ -8,11 +8,13 @@ from sqlmodel import Field, Relationship, SQLModel
 from sqlalchemy.orm import relationship
 
 if TYPE_CHECKING:
-    from .api_key import ApiKey
-    from .role import Role
+    from .api_key import ClientCredential
+    from .role import ScopePreset
 
 
-class UserAccount(SQLModel, table=True):
+class Client(SQLModel, table=True):
+    __tablename__ = "client"
+
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     username: str = Field(index=True, unique=True)
     display_name: Optional[str] = None
@@ -27,28 +29,37 @@ class UserAccount(SQLModel, table=True):
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc))
 
-    roles: List["UserRole"] = Relationship(
+    roles: List["ClientScopePreset"] = Relationship(
         sa_relationship=relationship(
-            "UserRole",
+            "ClientScopePreset",
             back_populates="user",
             cascade="all, delete",
         )
     )
-    api_keys: List["ApiKey"] = Relationship(
+    api_keys: List["ClientCredential"] = Relationship(
         sa_relationship=relationship(
-            "ApiKey",
+            "ClientCredential",
             back_populates="user",
             cascade="all, delete",
         )
     )
 
 
-class UserRole(SQLModel, table=True):
+class ClientScopePreset(SQLModel, table=True):
+    __tablename__ = "client_scope_preset"
+
     id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: UUID = Field(foreign_key="useraccount.id", index=True)
-    role_id: UUID = Field(foreign_key="role.id", index=True)
+    user_id: UUID = Field(foreign_key="client.id", index=True)
+    role_id: UUID = Field(foreign_key="scopepreset.id", index=True)
 
-    user: UserAccount = Relationship(
-        sa_relationship=relationship("UserAccount", back_populates="roles")
+    user: Client = Relationship(
+        sa_relationship=relationship("Client", back_populates="roles")
     )
-    role: "Role" = Relationship(sa_relationship=relationship("Role"))
+    role: "ScopePreset" = Relationship(
+        sa_relationship=relationship("ScopePreset")
+    )
+
+
+# Backwards-compatible aliases
+UserAccount = Client
+UserRole = ClientScopePreset

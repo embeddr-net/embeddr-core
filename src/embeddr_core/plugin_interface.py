@@ -36,11 +36,6 @@ class PluginIntent(str, Enum):
     PROVIDE_INDEXER = "provide_indexer"
     PROVIDE_STORAGE = "provide_storage"
 
-    # Deprecated: prefer Lotus capabilities instead of intent-specific logic
-    PROVIDE_EMBEDDINGS = "provide_embeddings"
-    PROVIDE_MODEL_INSIGHTS = "provide_model_insights"
-    REGISTER_MCP_TOOL = "register_mcp_tool"
-
 
 class PluginEventType(str, Enum):
     UI_TOAST = "ui:toast"
@@ -480,27 +475,6 @@ class EmbeddrPlugin(ABC):
         'cli' is a Typer instance scoped to the plugin name.
         """
         pass
-
-    # --- MCP Hooks ---
-
-    def register_mcp_tools(self) -> List[Dict[str, Any]]:
-        """
-        Return list of MCP tool definitions.
-        Format should match MCP Tool schema.
-        {
-            "name": "tool_name",
-            "description": "...",
-            "inputSchema": {...},
-            "handler": callable_function
-        }
-        """
-        return []
-
-    def register_mcp_resources(self) -> List[Dict[str, Any]]:
-        """
-        Return list of MCP resource definitions.
-        """
-        return []
 
     # --- Core Schema Hooks ---
 

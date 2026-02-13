@@ -2,4 +2,5 @@
 
 __all__ = [
     "plugin_interface",
+    "plugin_actions",
 ]

@@ -17,7 +17,7 @@ class Artifact(SQLModel, table=True):
 
     # Owner (optional for single-user/default mode)
     owner_user_id: Optional[UUID] = Field(
-        default=None, foreign_key="useraccount.id", index=True
+        default=None, foreign_key="client.id", index=True
     )
     owner_operator_id: Optional[UUID] = Field(
         default=None, foreign_key="operator.id", index=True
