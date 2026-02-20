@@ -7,10 +7,12 @@ from uuid import UUID
 from datetime import datetime
 
 from sqlmodel import Session, select, col
+from sqlalchemy import or_
 
 from embeddr_core.models.artifact import Artifact, ArtifactPreview
 from embeddr_core.models.artifact_embedding import ArtifactEmbedding
 from embeddr_core.models.artifact_annotation import ArtifactAnnotation
+from embeddr_core.models.artifact_type import ArtifactType
 from embeddr_core.services import embedding
 from embeddr_core.services.feature_refs import upsert_feature_ref, build_feature_name
 # Note: We need to inject the VectorStoreService instance or access a global ONE.
@@ -18,6 +20,72 @@ from embeddr_core.services.feature_refs import upsert_feature_ref, build_feature
 # from embeddr_core.services.vector_store import get_vector_service
 
 logger = logging.getLogger(__name__)
+
+VISION_ROOTS = {"image", "video"}
+TEXT_ROOTS = {"text", "document"}
+
+
+def _collect_descendant_type_names(session: Session, roots: set[str]) -> set[str]:
+    rows = session.exec(select(ArtifactType)).all()
+    children_by_parent: dict[str, set[str]] = {}
+    for row in rows:
+        name = str(row.name or "").strip().lower()
+        parent = str(row.parent_name or "").strip().lower()
+        if not name:
+            continue
+        if parent:
+            children_by_parent.setdefault(parent, set()).add(name)
+
+    out = set(roots)
+    stack = list(roots)
+    while stack:
+        current = stack.pop()
+        for child in children_by_parent.get(current, set()):
+            if child in out:
+                continue
+            out.add(child)
+            stack.append(child)
+    return out
+
+
+def _build_type_capability_map(session: Session) -> dict[str, set[str]]:
+    rows = session.exec(select(ArtifactType)).all()
+    out: dict[str, set[str]] = {}
+    for row in rows:
+        key = str(row.name or "").strip().lower()
+        if not key:
+            continue
+        try:
+            caps = {str(cap).strip().lower()
+                    for cap in row.resolve_capabilities(session)}
+        except Exception:
+            caps = {str(cap).strip().lower()
+                    for cap in (row.default_capabilities or [])}
+        out[key] = caps
+    return out
+
+
+def _classify_embedding_kind(
+    artifact: Artifact,
+    *,
+    vision_types: set[str],
+    text_types: set[str],
+    type_caps: dict[str, set[str]],
+) -> str | None:
+    tname = str(artifact.type_name or "").strip().lower()
+    bname = str(artifact.base_type_name or "").strip().lower()
+    caps = type_caps.get(tname, set())
+
+    if tname in text_types or bname in TEXT_ROOTS:
+        return "text"
+    if tname in vision_types or bname in VISION_ROOTS:
+        return "vision"
+
+    if {"text", "document"} & caps:
+        return "text"
+    if {"image", "video", "embeddable:vision", "vision"} & caps:
+        return "vision"
+    return None
 
 
 def _is_http_url(value: Optional[str]) -> bool:
@@ -60,10 +128,17 @@ def generate_embeddings_for_artifacts(
     Generates embeddings for all artifacts that support it and don't have them.
     If artifact_ids is provided, only processes those artifacts.
     """
-    # 1. Find candidates: Type 'image' or capability 'embeddable:vision' (TODO: capability check)
-    # For now, simplistic check on type_name
+    vision_types = _collect_descendant_type_names(session, VISION_ROOTS)
+    text_types = _collect_descendant_type_names(session, TEXT_ROOTS)
+    embeddable_types = vision_types | text_types
+    type_caps = _build_type_capability_map(session)
+
     query = select(Artifact).where(
-        col(Artifact.type_name).in_(["image", "image:comfy", "text", "document"]))
+        or_(
+            col(Artifact.type_name).in_(list(embeddable_types)),
+            col(Artifact.base_type_name).in_(list(VISION_ROOTS | TEXT_ROOTS)),
+        )
+    )
 
     # Optional filter by IDs
     if artifact_ids:
@@ -111,8 +186,15 @@ def generate_embeddings_for_artifacts(
         if stop_event and stop_event.is_set():
             break
 
+        artifact_kind = _classify_embedding_kind(
+            artifact,
+            vision_types=vision_types,
+            text_types=text_types,
+            type_caps=type_caps,
+        )
+
         # Handle text/docs separately
-        if artifact.type_name in ["text", "document"]:
+        if artifact_kind == "text":
             # Try to find content annotation first
             content_annotation = session.exec(select(ArtifactAnnotation).where(
                 ArtifactAnnotation.artifact_id == artifact.id,
@@ -158,7 +240,7 @@ def generate_embeddings_for_artifacts(
             fpath = fpath[7:]
 
         # If it's an image, check for a thumbnail preview
-        if artifact.type_name in ["image", "image:comfy"]:
+        if artifact_kind == "vision":
             preview = session.exec(
                 select(ArtifactPreview)
                 .where(ArtifactPreview.artifact_id == artifact.id)

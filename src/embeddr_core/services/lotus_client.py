@@ -125,6 +125,33 @@ def invoke_action(
         session=session,
     )
 
+    if "__embeddr_auth" not in merged_inputs:
+        payload: Dict[str, Any] = {}
+        if isinstance(getattr(context, "inputs", None), dict):
+            inherited = context.inputs.get("__embeddr_auth")
+            if isinstance(inherited, dict):
+                payload.update(inherited)
+
+        for key in ("mode", "user_id", "operator_id", "api_key_id", "session_id"):
+            value = getattr(context, key, None)
+            if value is not None and key not in payload:
+                payload[key] = str(value) if key.endswith("_id") else value
+
+        for key in ("is_admin", "is_root", "is_open"):
+            value = getattr(context, key, None)
+            if value is not None and key not in payload:
+                payload[key] = bool(value)
+
+        permissions = getattr(context, "permissions", None)
+        if permissions is not None and "permissions" not in payload:
+            if isinstance(permissions, (set, tuple, list)):
+                payload["permissions"] = [str(p) for p in permissions if p]
+            elif permissions:
+                payload["permissions"] = [str(permissions)]
+
+        if payload:
+            merged_inputs["__embeddr_auth"] = payload
+
     model_path = ((data.get("input") or {}).get("model") or "")
     Model = _import_model(str(model_path))
     if Model is not None:

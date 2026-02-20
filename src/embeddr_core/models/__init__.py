@@ -26,5 +26,6 @@ from .api_key import (
     ApiKeyPermission,
 )
 from .panel_session import PanelSession
+from .auth_session import AuthSession
 
 # Explicitly NOT exporting legacy models to avoid table registration
