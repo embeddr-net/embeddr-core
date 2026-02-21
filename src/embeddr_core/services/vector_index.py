@@ -232,7 +232,8 @@ class PgVectorIndexBackend:
     ) -> Dict[str, Any]:
         delete_stmt = delete(self._model)
         if model_name:
-            delete_stmt = delete_stmt.where(self._model.model_name == model_name)
+            delete_stmt = delete_stmt.where(
+                self._model.model_name == model_name)
         if space:
             delete_stmt = delete_stmt.where(self._model.space == space)
         session.exec(delete_stmt)
@@ -346,7 +347,8 @@ class ChromaVectorIndexBackend:
                 for entry in chunk
             ]
             try:
-                collection.upsert(ids=ids, embeddings=embeddings, metadatas=metadatas)
+                collection.upsert(
+                    ids=ids, embeddings=embeddings, metadatas=metadatas)
                 written += len(chunk)
                 index += len(chunk)
             except Exception as exc:
@@ -405,7 +407,8 @@ class ChromaVectorIndexBackend:
             distance = float(distances[idx]) if idx < len(distances) else 0.0
             score = 1.0 - distance
             out.append(
-                VectorSearchResult(artifact_id=UUID(str(artifact_id)), score=score)
+                VectorSearchResult(artifact_id=UUID(
+                    str(artifact_id)), score=score)
             )
         return out
 
@@ -416,9 +419,11 @@ class ChromaVectorIndexBackend:
         model_name: Optional[str] = None,
         space: Optional[str] = None,
     ) -> Dict[str, Any]:
-        stmt_pairs = select(ArtifactEmbedding.model_name, ArtifactEmbedding.space)
+        stmt_pairs = select(ArtifactEmbedding.model_name,
+                            ArtifactEmbedding.space)
         if model_name:
-            stmt_pairs = stmt_pairs.where(ArtifactEmbedding.model_name == model_name)
+            stmt_pairs = stmt_pairs.where(
+                ArtifactEmbedding.model_name == model_name)
         if space:
             stmt_pairs = stmt_pairs.where(ArtifactEmbedding.space == space)
         pairs = session.exec(stmt_pairs.distinct()).all()
@@ -428,7 +433,8 @@ class ChromaVectorIndexBackend:
         for pair in pairs:
             pair_model = pair[0]
             pair_space = pair[1]
-            collection_name = self._collection_name(session, pair_model, pair_space)
+            collection_name = self._collection_name(
+                session, pair_model, pair_space)
             try:
                 client.delete_collection(collection_name)
             except Exception:
