@@ -104,6 +104,7 @@ class DbVectorIndexBackend:
                    ArtifactEmbedding.vector_json)
             .where(ArtifactEmbedding.model_name == model_name)
             .where(ArtifactEmbedding.space == space)
+            .where(ArtifactEmbedding.vector_dim == len(query_vector))
         ).all()
         if not rows:
             return []
@@ -209,6 +210,7 @@ class PgVectorIndexBackend:
             select(self._model.artifact_id, distance.label("distance"))
             .where(self._model.model_name == model_name)
             .where(self._model.space == space)
+            .where(self._model.vector_dim == len(query_vector))
             .order_by(distance)
             .limit(limit)
         )
@@ -271,6 +273,7 @@ except Exception:
 
 class ChromaVectorIndexBackend:
     name = "chroma"
+    _chroma: Any = None
 
     def _resolve_config(self, session: Session) -> Dict[str, Any]:
         cfg = resolve_plugin_config(
@@ -307,25 +310,78 @@ class ChromaVectorIndexBackend:
             metadata={"hnsw:space": "cosine"},
         )
 
+    def _batch_size(self, session: Session) -> int:
+        cfg = self._resolve_config(session)
+        try:
+            value = int(cfg.get("chroma_batch_size") or 64)
+        except Exception:
+            value = 64
+        return max(1, min(value, 1000))
+
+    def _upsert_entries(
+        self,
+        *,
+        collection: Any,
+        entries: List[VectorIndexEntry],
+        batch_size: int,
+    ) -> int:
+        if not entries:
+            return 0
+
+        written = 0
+        index = 0
+        current_batch_size = max(1, int(batch_size))
+
+        while index < len(entries):
+            chunk = entries[index:index + current_batch_size]
+            ids = [str(entry.artifact_id) for entry in chunk]
+            embeddings = [entry.vector for entry in chunk]
+            metadatas = [
+                {
+                    "model_name": entry.model_name,
+                    "space": entry.space,
+                    "plugin_name": entry.plugin_name,
+                    "vector_dim": entry.vector_dim,
+                }
+                for entry in chunk
+            ]
+            try:
+                collection.upsert(ids=ids, embeddings=embeddings, metadatas=metadatas)
+                written += len(chunk)
+                index += len(chunk)
+            except Exception as exc:
+                msg = str(exc).lower()
+                is_payload_error = (
+                    "payload too large" in msg
+                    or "request entity too large" in msg
+                    or "413" in msg
+                )
+                if is_payload_error and current_batch_size > 1:
+                    next_size = max(1, current_batch_size // 2)
+                    if next_size == current_batch_size:
+                        next_size = current_batch_size - 1
+                    logger.warning(
+                        "Chroma upsert payload too large; reducing batch size from %s to %s",
+                        current_batch_size,
+                        next_size,
+                    )
+                    current_batch_size = max(1, next_size)
+                    continue
+                raise
+
+        return written
+
     def upsert(self, session: Session, entries: Iterable[VectorIndexEntry]) -> int:
         entries_list = list(entries)
         if not entries_list:
             return 0
         sample = entries_list[0]
         collection = self._collection(session, sample.model_name, sample.space)
-        ids = [str(entry.artifact_id) for entry in entries_list]
-        embeddings = [entry.vector for entry in entries_list]
-        metadatas = [
-            {
-                "model_name": entry.model_name,
-                "space": entry.space,
-                "plugin_name": entry.plugin_name,
-                "vector_dim": entry.vector_dim,
-            }
-            for entry in entries_list
-        ]
-        collection.upsert(ids=ids, embeddings=embeddings, metadatas=metadatas)
-        return len(entries_list)
+        return self._upsert_entries(
+            collection=collection,
+            entries=entries_list,
+            batch_size=self._batch_size(session),
+        )
 
     def search(
         self,
@@ -397,19 +453,11 @@ class ChromaVectorIndexBackend:
                 )
                 for row in rows
             ]
-            ids = [str(entry.artifact_id) for entry in entries]
-            embeddings = [entry.vector for entry in entries]
-            metadatas = [
-                {
-                    "model_name": entry.model_name,
-                    "space": entry.space,
-                    "plugin_name": entry.plugin_name,
-                    "vector_dim": entry.vector_dim,
-                }
-                for entry in entries
-            ]
-            collection.upsert(ids=ids, embeddings=embeddings, metadatas=metadatas)
-            total += len(entries)
+            total += self._upsert_entries(
+                collection=collection,
+                entries=entries,
+                batch_size=self._batch_size(session),
+            )
 
         return {
             "ok": True,
