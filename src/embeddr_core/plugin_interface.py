@@ -476,6 +476,24 @@ class EmbeddrPlugin(ABC):
         """
         pass
 
+    def register_transport(self, app: Any) -> None:
+        """
+        Optional transport hook. Called during serve startup with an auth-wrapped app.
+        """
+        pass
+
+    def get_transport_lifespan(self) -> Optional[Any]:
+        """
+        Optional transport lifespan context manager.
+        """
+        return None
+
+    def get_transport_info(self) -> Dict[str, Any]:
+        """
+        Optional transport metadata used for startup summaries.
+        """
+        return {}
+
     # --- Core Schema Hooks ---
 
     def register_types(self) -> List[Dict[str, Any]]:
