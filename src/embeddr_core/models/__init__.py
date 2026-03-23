@@ -3,6 +3,7 @@ from .artifact_blob import ArtifactBlob
 from .artifact_ingest import ArtifactIngest
 from .artifact_lineage import ArtifactLineage
 from .artifact_relation import ArtifactRelation
+from .relation_type import RelationTypeDef
 from .artifact_type import ArtifactType
 from .plugin_registry import PluginRegistry
 from .tag import Tag, ArtifactTagLink
@@ -27,5 +28,7 @@ from .api_key import (
 )
 from .panel_session import PanelSession
 from .auth_session import AuthSession
+from .service_client import ServiceClient
+from .authorization_code import AuthorizationCode
 
 # Explicitly NOT exporting legacy models to avoid table registration

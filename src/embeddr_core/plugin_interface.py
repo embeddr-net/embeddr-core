@@ -6,6 +6,7 @@ import os
 from typing import List, Dict, Any, Literal, Optional, Protocol, Union
 from embeddr_core.models.lotus import LotusCapability
 from embeddr_core.models.artifact_type import ArtifactTypeSpec
+from embeddr_core.models.relation_type import RelationTypeDef
 from pydantic import BaseModel
 
 logger = logging.getLogger("embeddr.core.plugin_context")
@@ -272,7 +273,9 @@ class PluginContext(BaseModel):
     resources: Optional[Any] = None  # Typically ResourceManager
     config: Optional[Dict[str, Any]] = None
     lotus: Optional[Any] = None
-    # We can add db_engine, config, etc here later if needed
+    # Callable[[], ContextManager[Session]] — used for DB writes during on_load.
+    # Set by the plugin loader when a DB engine is available.
+    db_session_factory: Optional[Any] = None
 
     @property
     def ui(self) -> UIHandle:
@@ -318,6 +321,72 @@ class PluginContext(BaseModel):
             inputs=inputs,
             context=self,
         )
+
+    def register_relation_type(
+        self,
+        name: str,
+        *,
+        family: str = "other",
+        inverse: Optional[str] = None,
+        transitive: bool = False,
+        structural: bool = False,
+        description: str = "",
+        registered_by: str = "",
+    ) -> None:
+        """
+        Register a plugin-defined relation type into the global registry.
+
+        Call this during on_load() to declare semantic edge types your plugin
+        creates. This replaces the old pattern of hardcoding plugin relation
+        types in graph_semantics.py.
+
+        Example::
+
+            def on_load(self, context):
+                context.register_relation_type(
+                    "appears_in",
+                    family="membership",
+                    description="Entity appears in a scene or media item.",
+                    registered_by=f"plugin:{self.name}",
+                )
+        """
+        if _context_trace_enabled():
+            logger.info("[ContextTrace] register_relation_type name=%s", name)
+
+        db_session_factory = self.db_session_factory
+        if db_session_factory is None:
+            logger.warning(
+                "register_relation_type(%s): no db session available on context. "
+                "Type will not be persisted.",
+                name,
+            )
+            return
+
+        resolved_by = registered_by or f"plugin:{name}"
+
+        try:
+            with db_session_factory() as session:
+                from sqlmodel import select
+
+                existing = session.exec(
+                    select(RelationTypeDef).where(RelationTypeDef.name == name)
+                ).first()
+                if existing is None:
+                    session.add(
+                        RelationTypeDef(
+                            name=name,
+                            family=family,
+                            inverse=inverse,
+                            transitive=transitive,
+                            structural=structural,
+                            description=description,
+                            registered_by=resolved_by,
+                        )
+                    )
+                    session.commit()
+                    logger.debug("Registered relation type: %s (family=%s)", name, family)
+        except Exception as exc:
+            logger.warning("Failed to register relation type %s: %s", name, exc)
 
 
 class LotusInvoker(Protocol):

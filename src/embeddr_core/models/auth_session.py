@@ -19,6 +19,9 @@ class AuthSession(SQLModel, table=True):
     api_key_id: Optional[UUID] = Field(
         default=None, foreign_key="clientcredential.id", index=True
     )
+    service_client_id: Optional[UUID] = Field(
+        default=None, foreign_key="service_client.id", index=True
+    )
 
     token_hash: str = Field(index=True, unique=True)
     token_prefix: str = Field(index=True)

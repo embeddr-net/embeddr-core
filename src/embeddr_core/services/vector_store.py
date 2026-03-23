@@ -1,6 +1,11 @@
 import json
 import logging
 import time
+import os
+import importlib
+import importlib.util
+import sys
+from pathlib import Path
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 
@@ -13,6 +18,7 @@ from embeddr_core.services.config_service import resolve_plugin_config
 from embeddr_core.services.vector_index import vector_index_registry, VectorIndexEntry
 
 logger = logging.getLogger("embeddr.plugin.embeddr-vector-index.search")
+_ZVEC_REGISTER_ATTEMPTED = False
 
 
 class VectorStoreService:
@@ -26,6 +32,81 @@ class VectorStoreService:
         # Cache of loaded vectors: { model_name: { space: (ids, vectors) } }
         self._cache = {}
         self._cache_meta: Dict[str, Dict[str, Any]] = {}
+
+    def _ensure_zvec_registered(self) -> bool:
+        global _ZVEC_REGISTER_ATTEMPTED
+
+        if vector_index_registry.get("zvec") is not None:
+            return True
+        if _ZVEC_REGISTER_ATTEMPTED:
+            return vector_index_registry.get("zvec") is not None
+
+        _ZVEC_REGISTER_ATTEMPTED = True
+
+        # Try installed import path first.
+        module_candidates = [
+            "embeddr_plugins.embeddr_vectors_zvec.plugin",
+            "embeddr_vectors_zvec.plugin",
+        ]
+        for mod_name in module_candidates:
+            try:
+                plugin_mod = importlib.import_module(mod_name)
+                backend_cls = getattr(plugin_mod, "ZvecVectorIndexBackend", None)
+                if backend_cls is not None and vector_index_registry.get("zvec") is None:
+                    vector_index_registry.register(backend_cls())
+                    logger.info("vector.search registered zvec backend via module import: %s", mod_name)
+                if vector_index_registry.get("zvec") is not None:
+                    return True
+            except Exception:
+                continue
+
+        # Fallback: load from monorepo path when running from workspace checkout.
+        try:
+            candidate_paths = []
+            cwd = Path.cwd()
+            candidate_paths.append(cwd / "embeddr-plugins" / "plugins" / "core" / "embeddr-vectors-zvec" / "plugin.py")
+
+            env_plugin_root = os.environ.get("EMBEDDR_PLUGINS_DIR") or os.environ.get("EMBEDDR_PLUGIN_DIR")
+            if env_plugin_root:
+                env_root_path = Path(env_plugin_root)
+                candidate_paths.append(env_root_path / "embeddr-vectors-zvec" / "plugin.py")
+                candidate_paths.append(env_root_path / "plugins" / "embeddr-vectors-zvec" / "plugin.py")
+
+            for parent in Path(__file__).resolve().parents:
+                candidate_paths.append(parent / "embeddr-plugins" / "plugins" / "core" / "embeddr-vectors-zvec" / "plugin.py")
+                candidate_paths.append(parent / "embeddr-plugins" / "dist" / "plugins" / "embeddr-vectors-zvec" / "plugin.py")
+                candidate_paths.append(parent / "dist" / "plugins" / "embeddr-vectors-zvec" / "plugin.py")
+
+            for plugin_path in candidate_paths:
+                if not plugin_path.exists():
+                    continue
+                pkg_name = "embeddr_vectors_zvec_runtime"
+                pkg_spec = importlib.util.spec_from_loader(pkg_name, loader=None)
+                pkg_mod = importlib.util.module_from_spec(pkg_spec)
+                pkg_mod.__path__ = [str(plugin_path.parent)]
+                sys.modules[pkg_name] = pkg_mod
+
+                spec = importlib.util.spec_from_file_location(
+                    f"{pkg_name}.plugin",
+                    plugin_path,
+                    submodule_search_locations=[str(plugin_path.parent)],
+                )
+                if spec is None or spec.loader is None:
+                    continue
+                plugin_mod = importlib.util.module_from_spec(spec)
+                sys.modules[f"{pkg_name}.plugin"] = plugin_mod
+                spec.loader.exec_module(plugin_mod)
+
+                backend_cls = getattr(plugin_mod, "ZvecVectorIndexBackend", None)
+                if backend_cls is not None and vector_index_registry.get("zvec") is None:
+                    vector_index_registry.register(backend_cls())
+                    logger.info("vector.search registered zvec backend via file import: %s", plugin_path)
+                if vector_index_registry.get("zvec") is not None:
+                    return True
+        except Exception as exc:
+            logger.warning("vector.search zvec lazy registration failed: %s", exc)
+
+        return vector_index_registry.get("zvec") is not None
 
     def _resolve_backend_name(self, session: Optional[Session] = None) -> str:
         from contextlib import nullcontext
@@ -67,9 +148,32 @@ class VectorStoreService:
                 "Failed to resolve vector index log_search config")
         return False
 
+    def _resolve_fallback_on_empty(self, session: Optional[Session] = None) -> bool:
+        from contextlib import nullcontext
+
+        ctx = nullcontext(session) if session else self.session_factory()
+        try:
+            with ctx as active_session:
+                cfg = resolve_plugin_config(
+                    session=active_session,
+                    plugin_name="embeddr-vector-index",
+                    scope="global",
+                    scope_id=None,
+                    config_id="embeddr-vector-index.config",
+                )
+            if isinstance(cfg, dict):
+                return bool(cfg.get("fallback_on_empty", False))
+        except Exception:
+            logger.exception(
+                "Failed to resolve vector index fallback_on_empty config")
+        return False
+
     def _resolve_backend(self, session: Optional[Session] = None):
         backend_name = self._resolve_backend_name(session)
         backend = vector_index_registry.get(backend_name)
+        if backend is None and backend_name == "zvec":
+            self._ensure_zvec_registered()
+            backend = vector_index_registry.get(backend_name)
         if not backend and backend_name != "db":
             logger.warning(
                 "Vector index backend '%s' not registered; falling back to db",
@@ -148,6 +252,7 @@ class VectorStoreService:
         """
         start = time.perf_counter()
         log_search = self._resolve_log_search(session)
+        fallback_on_empty = self._resolve_fallback_on_empty(session)
         backend, backend_name = self._resolve_backend(session)
         if backend and backend_name != "db":
             from contextlib import nullcontext
@@ -165,17 +270,38 @@ class VectorStoreService:
                 {"artifact_id": item.artifact_id, "score": item.score}
                 for item in results
             ]
-            if log_search:
-                elapsed_ms = (time.perf_counter() - start) * 1000.0
-                logger.info(
-                    "vector.search backend=%s model=%s space=%s limit=%s took_ms=%.2f",
-                    backend_name,
-                    model_name,
-                    space,
-                    limit,
-                    elapsed_ms,
-                )
-            return out
+            if out:
+                if log_search:
+                    elapsed_ms = (time.perf_counter() - start) * 1000.0
+                    logger.info(
+                        "vector.search backend=%s model=%s space=%s limit=%s took_ms=%.2f",
+                        backend_name,
+                        model_name,
+                        space,
+                        limit,
+                        elapsed_ms,
+                    )
+                return out
+
+            if not fallback_on_empty:
+                if log_search:
+                    elapsed_ms = (time.perf_counter() - start) * 1000.0
+                    logger.info(
+                        "vector.search backend=%s model=%s space=%s limit=%s took_ms=%.2f",
+                        backend_name,
+                        model_name,
+                        space,
+                        limit,
+                        elapsed_ms,
+                    )
+                return out
+
+            logger.warning(
+                "vector.search backend=%s returned 0 results for model=%s space=%s; falling back to db",
+                backend_name,
+                model_name,
+                space,
+            )
 
         ids, vectors = self._load_index(model_name, space, session=session)
         if not ids:

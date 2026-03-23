@@ -116,6 +116,12 @@ def invoke_action(
     data = cap.data or {}
     plugin_name = str(data.get("plugin") or cap.plugin or "")
     action_name = str(data.get("action") or "")
+    # Also check the structured LotusAction payload (matches lotus_invoke_routes)
+    if cap.action:
+        if cap.action.action:
+            action_name = cap.action.action
+        if cap.plugin:
+            plugin_name = cap.plugin
     if not plugin_name or not action_name:
         raise ValueError(f"Capability missing plugin/action: {cap_id}")
 
@@ -152,7 +158,13 @@ def invoke_action(
         if payload:
             merged_inputs["__embeddr_auth"] = payload
 
-    model_path = ((data.get("input") or {}).get("model") or "")
+    # Resolve input model — check structured action, then fallback to data dict
+    input_block = None
+    if cap.action and cap.action.input:
+        input_block = cap.action.input
+    if input_block is None:
+        input_block = data.get("input") or {}
+    model_path = (input_block.get("model") or "")
     Model = _import_model(str(model_path))
     if Model is not None:
         obj = Model.model_validate(merged_inputs)

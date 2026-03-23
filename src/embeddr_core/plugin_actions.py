@@ -1,7 +1,9 @@
 import inspect
 import logging
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Callable, Dict, Optional, Type, get_args, get_origin
+from typing import get_type_hints
 
 from pydantic import BaseModel
 
@@ -177,19 +179,31 @@ def _model_from_annotation(annotation: Any) -> Optional[Type[BaseModel]]:
     return None
 
 
+@lru_cache(maxsize=512)
+def _resolved_type_hints(func: Callable[..., Any]) -> Dict[str, Any]:
+    target = getattr(func, "__func__", func)
+    try:
+        return get_type_hints(target, globalns=getattr(target, "__globals__", {}))
+    except Exception:
+        return {}
+
+
 def _title_from_action(action_name: str) -> str:
     return action_name.replace(".", " ").replace("_", " ").title()
 
 
 def _infer_input_model(func: Callable[..., Any]) -> Optional[Type[BaseModel]]:
     sig = inspect.signature(func)
+    hints = _resolved_type_hints(func)
     model_type: Optional[Type[BaseModel]] = None
     for param in sig.parameters.values():
         if param.name == "self":
             continue
         if param.name in _INJECT_PARAM_NAMES:
             continue
-        ann_model = _model_from_annotation(param.annotation)
+        ann_model = _model_from_annotation(
+            hints.get(param.name, param.annotation)
+        )
         if not ann_model:
             continue
         if model_type and model_type is not ann_model:
@@ -202,16 +216,21 @@ def _infer_input_model(func: Callable[..., Any]) -> Optional[Type[BaseModel]]:
 
 
 def _select_model_param(
-    sig: inspect.Signature, model_type: Optional[Type[BaseModel]]
+    sig: inspect.Signature,
+    model_type: Optional[Type[BaseModel]],
+    hints: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     if model_type is None:
         return None
 
+    resolved_hints = hints or {}
     selected: Optional[str] = None
     for name, param in sig.parameters.items():
         if name == "self":
             continue
-        ann_model = _model_from_annotation(param.annotation)
+        ann_model = _model_from_annotation(
+            resolved_hints.get(name, param.annotation)
+        )
         if ann_model is model_type:
             if selected and selected != name:
                 raise ValueError(
@@ -319,12 +338,13 @@ class ActionPlugin(LotusPlugin):
         execution_id: Any,
     ) -> Dict[str, Any]:
         sig = inspect.signature(handler.func)
+        hints = _resolved_type_hints(handler.func)
         model_value = (
             handler.input_model.model_validate(inputs or {})
             if handler.input_model
             else None
         )
-        model_param = _select_model_param(sig, handler.input_model)
+        model_param = _select_model_param(sig, handler.input_model, hints)
         kwargs: Dict[str, Any] = {}
 
         for name, param in sig.parameters.items():
@@ -343,7 +363,9 @@ class ActionPlugin(LotusPlugin):
                 kwargs[name] = inputs or {}
                 continue
 
-            ann_model = _model_from_annotation(param.annotation)
+            ann_model = _model_from_annotation(
+                hints.get(name, param.annotation)
+            )
             if ann_model and model_value is not None:
                 kwargs[name] = model_value
                 continue

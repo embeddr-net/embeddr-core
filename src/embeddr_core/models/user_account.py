@@ -26,6 +26,7 @@ class Client(SQLModel, table=True):
     )
     is_active: bool = True
     is_admin: bool = False
+    must_change_password: bool = Field(default=False)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc))
 
