@@ -36,7 +36,7 @@ class ArtifactExecution(SQLModel, table=True):
     trigger: str = Field(default="user")
 
     # Opaque inputs payload
-    inputs: Dict[str, Any] = Field(default={}, sa_type=JSON)
+    inputs: Dict[str, Any] = Field(default_factory=dict, sa_type=JSON)
 
     # Outcome payload (artifact IDs, stats)
     outputs: Optional[Dict[str, Any]] = Field(default=None, sa_type=JSON)
@@ -55,13 +55,15 @@ class ArtifactExecution(SQLModel, table=True):
     operator_id: Optional[UUID] = Field(default=None, index=True)
 
     # Which API key was used (for audit trail)
-    api_key_id: Optional[str] = Field(default=None)
+    api_key_id: Optional[UUID] = Field(
+        default=None, foreign_key="clientcredential.id", index=True
+    )
 
     # What event triggered this (e.g. "artifact.created", "user.action")
     trigger_event_type: Optional[str] = Field(default=None)
 
     # Arbitrary tags for filtering/grouping (e.g. {"category": "ingestion", "batch_id": "xxx"})
-    tags: Dict[str, str] = Field(default={}, sa_column=Column(JSON))
+    tags: Dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
 
     # --- Timestamps ---
 

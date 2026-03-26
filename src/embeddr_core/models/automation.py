@@ -19,11 +19,11 @@ class Automation(SQLModel, table=True):
 
     # JSON logic/filtering to apply to the event payload
     # e.g. { "type": "image", "metadata.has_face": true }
-    trigger_conditions: Dict[str, Any] = Field(default={}, sa_type=JSON)
+    trigger_conditions: Dict[str, Any] = Field(default_factory=dict, sa_type=JSON)
 
     # Work to perform
     # e.g. { "job_type": "comfy.generate", "inputs": { ... } }
-    actions: List[Dict[str, Any]] = Field(default=[], sa_type=JSON)
+    actions: List[Dict[str, Any]] = Field(default_factory=list, sa_type=JSON)
 
     # Optional metadata for UI/editor state (e.g. pipeline inputs schema)
     metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_type=JSON)

@@ -30,5 +30,11 @@ from .panel_session import PanelSession
 from .auth_session import AuthSession
 from .service_client import ServiceClient
 from .authorization_code import AuthorizationCode
+from .api_responses import (
+    OkResponse,
+    ErrorResponse,
+    PaginatedResponse,
+    ErrorCode,
+)
 
 # Explicitly NOT exporting legacy models to avoid table registration

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from uuid import UUID
 from typing import Optional, Dict, Any
 from sqlmodel import Field, SQLModel, JSON
@@ -12,7 +12,7 @@ class ArtifactLineage(SQLModel, table=True):
     parent_id: UUID = Field(foreign_key="artifact.id", primary_key=True)
     child_id: UUID = Field(foreign_key="artifact.id", primary_key=True)
 
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     # Metadata about THIS specific edge (e.g. "used as style reference" vs "used as initial image")
     relationship_metadata: Dict[str, Any] = Field(

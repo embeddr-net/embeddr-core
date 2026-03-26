@@ -22,7 +22,7 @@ class ClientCredential(SQLModel, table=True):
     name: str = Field(index=True)
     key_hash: str = Field(index=True, unique=True)
     key_prefix: str = Field(index=True)
-    scopes: List[str] = Field(default=[], sa_type=JSON)
+    scopes: List[str] = Field(default_factory=list, sa_type=JSON)
     is_active: bool = True
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc))

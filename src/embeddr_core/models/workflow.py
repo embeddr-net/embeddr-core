@@ -46,7 +46,7 @@ class WorkflowImplementation(BaseModel):
     type: str = Field(description="Engine type e.g. 'comfyui-graph'")
     version: Optional[str] = None
     payload: Dict[str, Any] = Field(
-        default={}, description="The raw graph or script config")
+        default_factory=dict, description="The raw graph or script config")
 
 
 class WorkflowStep(BaseModel):

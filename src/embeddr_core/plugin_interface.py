@@ -1,3 +1,47 @@
+"""
+Embeddr Plugin Interface
+========================
+
+This module defines the plugin contract for Embeddr. All plugins must subclass
+one of the base classes defined here.
+
+Quick start — pick the base class that fits your plugin:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Base Class
+     - When to Use
+   * - **ActionPlugin**
+     - **Preferred.** For plugins that expose executable actions.
+       Decorate methods with ``@action("name")`` for automatic dispatch.
+   * - LotusPlugin
+     - For plugins that register Lotus capabilities but handle
+       dispatch manually in ``execute()``.
+   * - EmbeddrPlugin
+     - Raw base class — full manual control. Use only if the
+       convenience bases don't fit your needs.
+
+Plugin discovery
+----------------
+
+The plugin loader scans your ``plugin.py`` for the **first class** that
+subclasses ``EmbeddrPlugin``. It instantiates it automatically — you don't
+need to export a module-level variable.
+
+Minimal plugin example::
+
+    from embeddr_core.plugin_interface import ActionPlugin, action
+
+    class MyPlugin(ActionPlugin):
+        PLUGIN_NAME = "my-cool-plugin"
+        PLUGIN_VERSION = "0.1.0"
+
+        @action("greet")
+        def greet(self, inputs: dict) -> dict:
+            return {"message": f"Hello, {inputs.get('name', 'world')}!"}
+"""
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -389,6 +433,33 @@ class PluginContext(BaseModel):
             logger.warning("Failed to register relation type %s: %s", name, exc)
 
 
+    def register_source_brand(
+        self,
+        namespace: str,
+        name: str,
+        icon_url: Optional[str] = None,
+    ) -> None:
+        """
+        Register brand identity for a source namespace.
+
+        Call this during on_load() so the provenance system can display
+        your plugin's name and icon when showing artifact creation history.
+
+        Example::
+
+            def on_load(self, context):
+                context.register_source_brand(
+                    "comfyui", "ComfyUI",
+                    icon_url="/api/v1/plugins/embeddr-comfyui/static/logo.png",
+                )
+        """
+        if _context_trace_enabled():
+            logger.info("[ContextTrace] register_source_brand namespace=%s", namespace)
+
+        from embeddr_core.services.source_brand_registry import get_source_brand_registry
+        get_source_brand_registry().register(namespace, name, icon_url=icon_url)
+
+
 class LotusInvoker(Protocol):
     def invoke_action(self, cap_id: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
         ...
@@ -586,11 +657,34 @@ class EmbeddrPlugin(ABC):
         """
         return []
 
-    def execute(self, action_name: str, execution_id: Any, inputs: Dict[str, Any], context: Optional[PluginContext] = None) -> Dict[str, Any]:
+    def execute(
+        self,
+        action_name: str,
+        execution_id: Any,
+        inputs: Dict[str, Any],
+        context: Optional[PluginContext] = None,
+    ) -> Dict[str, Any]:
         """
         Execute an action defined by this plugin.
-        Should raise exception on failure.
-        Return value is stored as 'outputs'.
+
+        This is the low-level dispatch method — you must manually route
+        ``action_name`` to the right handler. For most plugins, prefer
+        subclassing :class:`ActionPlugin` and decorating methods with
+        ``@action("name")`` instead. ActionPlugin handles dispatch,
+        input validation, and error handling automatically.
+
+        Args:
+            action_name: The action to execute (e.g. "generate", "analyze").
+            execution_id: UUID of the ArtifactExecution tracking this job.
+            inputs: Arbitrary input payload from the caller.
+            context: Plugin context with access to system services.
+
+        Returns:
+            Dict stored as the execution's ``outputs``.
+
+        Raises:
+            NotImplementedError: If the plugin doesn't handle the action.
+            Exception: On execution failure (stored as execution error).
         """
         raise NotImplementedError(
             f"Plugin {self.name} does not support execution of {action_name}")
@@ -649,7 +743,54 @@ class SimplePlugin(EmbeddrPlugin):
 
 class LotusPlugin(SimplePlugin):
     """
-    Brand-aligned alias for SimplePlugin.
+    Convenience base class for plugins that register Lotus capabilities
+    and have a static name/version.
+
+    For plugins that expose executable actions, prefer :class:`ActionPlugin`
+    which adds automatic action discovery via the ``@action`` decorator.
     """
 
     pass
+
+
+# ---------------------------------------------------------------------------
+# ActionPlugin — the preferred pattern for plugins with executable actions
+# ---------------------------------------------------------------------------
+# Re-exported here so plugin authors can import everything from one place:
+#
+#     from embeddr_core.plugin_interface import ActionPlugin, action
+#
+# See embeddr_core.plugin_actions for full implementation details.
+# ---------------------------------------------------------------------------
+
+from embeddr_core.plugin_actions import ActionPlugin, action, ActionDefaults  # noqa: E402, F401
+
+__all__ = [
+    # Base classes (pick the one that fits)
+    "EmbeddrPlugin",       # Raw base — full manual control
+    "SimplePlugin",        # Convenience base with static name/version
+    "LotusPlugin",         # Same as SimplePlugin (Lotus-aligned naming)
+    "ActionPlugin",        # PREFERRED — auto-discovers @action methods
+    # Decorator
+    "action",              # Mark a method as a dispatchable action
+    "ActionDefaults",      # Default metadata for all actions in a plugin
+    # Supporting types
+    "PluginIntent",
+    "PluginContext",
+    "PluginAction",
+    "PluginEventType",
+    "EmbeddrEvent",
+    "LotusInvoker",
+    # UI components
+    "PanelComponent",
+    "DockComponent",
+    "PageComponent",
+    "WidgetComponent",
+    "ConfigRendererComponent",
+    "FrontendAction",
+    "FrontendComponent",   # Deprecated — use register_zen()
+    "PanelUI",
+    "DockUI",
+    "UIHandle",
+    "EventBus",
+]

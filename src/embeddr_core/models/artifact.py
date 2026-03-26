@@ -34,13 +34,25 @@ class Artifact(SQLModel, table=True):
 
     # Unbounded, namespaced metadata
     # e.g. { "embeddr:image": { "width": 512, ... }, "user:comment": "..." }
-    metadata_json: Dict[str, Any] = Field(default={}, sa_type=JSON)
+    metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_type=JSON)
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        # Auto-derive base_type_name from type_name convention:
+        # 'image:comfy' → 'image', 'text:llm_message' → 'text'
+        # 'image' → 'image' (base type is itself for root types)
+        if not self.base_type_name or self.base_type_name == "artifact":
+            tn = self.type_name or ""
+            if ":" in tn:
+                self.base_type_name = tn.split(":")[0]
+            elif tn and tn != "artifact":
+                self.base_type_name = tn
 
     # Instance-specific capabilities (added on top of Type capabilities)
     # e.g. An image that has been specifically flagged as "nsfw" or "hidden"
     # might effectively "lose" capabilities or gain restriction capabilities locally
     # though usually this is additive.
-    override_capabilities: List[str] = Field(default=[], sa_type=JSON)
+    override_capabilities: List[str] = Field(default_factory=list, sa_type=JSON)
 
     # Relationships
     artifact_type: ArtifactType = Relationship()

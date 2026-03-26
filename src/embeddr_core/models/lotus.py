@@ -39,6 +39,9 @@ class LotusSlot(str, Enum):
     ARTIFACT_CREATE = "artifact.create"
     ARTIFACT_UPLOAD_INIT = "artifact.upload.init"
     ARTIFACT_UPLOAD_COMPLETE = "artifact.upload.complete"
+    INFERENCE_LLM = "inference.llm"
+    INFERENCE_VISION = "inference.vision"
+    INFERENCE_EMBEDDING = "inference.embedding"
 
 
 class LotusIOKind(str, Enum):
